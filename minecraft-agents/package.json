@@ -1,0 +1,34 @@
+{
+  "name": "imessage-spectrum-integration",
+  "version": "1.0.0",
+  "description": "iMessage integration using Photon Spectrum",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node --watch index.js",
+    "test": "node test.js",
+    "test-bridge": "node test-bridge.js",
+    "multi-agent": "node multi-agent-example.js",
+    "group-agents": "node group-chat-agents.js",
+    "voyager": "node imessage-voyager-integration.js",
+    "photon": "node photon-cloud-integration.js",
+    "hackathon": "node setup-hackathon.js",
+    "help": "node start.js"
+  },
+  "keywords": [
+    "imessage",
+    "photon",
+    "spectrum"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@photon-ai/imessage-kit": "latest",
+    "dotenv": "^17.4.2",
+    "mineflayer": "^4.37.0",
+    "spectrum-ts": "latest",
+    "supabase": "^2.92.1",
+    "upstash": "^0.0.1"
+  }
+}
