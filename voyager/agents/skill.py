@@ -24,6 +24,9 @@ class SkillManager:
             temperature=temperature,
             request_timeout=request_timout,
         )
+        self.ckpt_dir = ckpt_dir
+        if not resume:
+            self._reset_persisted_skill_state()
         U.f_mkdir(f"{ckpt_dir}/skill/code")
         U.f_mkdir(f"{ckpt_dir}/skill/description")
         U.f_mkdir(f"{ckpt_dir}/skill/vectordb")
@@ -35,7 +38,6 @@ class SkillManager:
         else:
             self.skills = {}
         self.retrieval_top_k = retrieval_top_k
-        self.ckpt_dir = ckpt_dir
         self.vectordb = Chroma(
             collection_name="skill_vectordb",
             embedding_function=OpenAIEmbeddingFunction(
@@ -49,6 +51,22 @@ class SkillManager:
             f"Did you set resume=False when initializing the manager?\n"
             f"You may need to manually delete the vectordb directory for running from scratch."
         )
+
+    def _reset_persisted_skill_state(self):
+        skill_dir = f"{self.ckpt_dir}/skill"
+        persisted_paths = [
+            f"{skill_dir}/skills.json",
+            f"{skill_dir}/code",
+            f"{skill_dir}/description",
+            f"{skill_dir}/vectordb",
+        ]
+        if not any(U.f_exists(path) for path in persisted_paths):
+            return
+        print(
+            f"\033[33mResetting stale Skill Manager state in {skill_dir} because resume=False.\033[0m"
+        )
+        for path in persisted_paths:
+            U.f_remove(path)
 
     @property
     def programs(self):
@@ -109,8 +127,21 @@ class SkillManager:
                 + f"The main function is `{program_name}`."
             ),
         ]
-        skill_description = f"    // { self.llm(messages).content}"
+        raw_description = self.llm(messages).content
+        skill_description = f"    // {self._sanitize_skill_description(raw_description)}"
         return f"async function {program_name}(bot) {{\n{skill_description}\n}}"
+
+    def _sanitize_skill_description(self, content):
+        if "</think>" in content:
+            content = content.split("</think>", 1)[1]
+        lines = [line.strip() for line in content.splitlines() if line.strip()]
+        if not lines:
+            return ""
+        # Prefer the last non-empty line because reasoning-heavy models often
+        # put the usable answer after a hidden/internal analysis block.
+        description = lines[-1]
+        description = description.strip("`'\" ")
+        return description
 
     def retrieve_skills(self, query):
         k = min(self.vectordb._collection.count(), self.retrieval_top_k)

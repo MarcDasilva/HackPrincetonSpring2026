@@ -41,6 +41,8 @@ class CurriculumAgent:
         ], f"mode {mode} not supported"
         self.mode = mode
         self.ckpt_dir = ckpt_dir
+        if not resume:
+            self._reset_persisted_curriculum_state()
         U.f_mkdir(f"{ckpt_dir}/curriculum/vectordb")
         if resume:
             print(f"\033[35mLoading Curriculum Agent from {ckpt_dir}/curriculum\033[0m")
@@ -88,6 +90,22 @@ class CurriculumAgent:
         self.warm_up["inventory"] = 0
         self.warm_up["completed_tasks"] = 0
         self.warm_up["failed_tasks"] = 0
+
+    def _reset_persisted_curriculum_state(self):
+        curriculum_dir = f"{self.ckpt_dir}/curriculum"
+        persisted_paths = [
+            f"{curriculum_dir}/completed_tasks.json",
+            f"{curriculum_dir}/failed_tasks.json",
+            f"{curriculum_dir}/qa_cache.json",
+            f"{curriculum_dir}/vectordb",
+        ]
+        if not any(U.f_exists(path) for path in persisted_paths):
+            return
+        print(
+            f"\033[35mResetting stale Curriculum Agent state in {curriculum_dir} because resume=False.\033[0m"
+        )
+        for path in persisted_paths:
+            U.f_remove(path)
 
     @property
     def default_warmup(self):
@@ -294,7 +312,10 @@ class CurriculumAgent:
         if max_retries == 0:
             raise RuntimeError("Max retries reached, failed to propose ai task.")
         curriculum = self.llm(messages).content
-        print(f"\033[31m****Curriculum Agent ai message****\n{curriculum}\033[0m")
+        print(
+            f"\033[31m****Curriculum Agent ai message****\n"
+            f"{self.format_ai_message_for_log(curriculum)}\033[0m"
+        )
         try:
             response = self.parse_ai_message(curriculum)
             assert "next_task" in response
@@ -310,12 +331,91 @@ class CurriculumAgent:
             )
 
     def parse_ai_message(self, message):
-        task = ""
-        for line in message.split("\n"):
-            if line.startswith("Task:"):
-                task = line[5:].replace(".", "").strip()
+        if "</think>" in message:
+            message = message.split("</think>", 1)[1]
+
+        task = self._extract_task_from_labeled_response(message)
+        if not task:
+            task = self._extract_task_from_freeform_response(message)
         assert task, "Task not found in Curriculum Agent response"
         return {"next_task": task}
+
+    def format_ai_message_for_log(self, message):
+        if "</think>" in message:
+            message = message.split("</think>", 1)[1]
+        try:
+            parsed = self.parse_ai_message(message)
+            return f"Task: {parsed['next_task']}"
+        except Exception:
+            return message.strip()
+
+    def _extract_task_from_labeled_response(self, message):
+        task_pattern = re.compile(
+            r"(?:^|\n)\s*(?:[-*]\s*)?(?:\*\*)?Task(?:\*\*)?\s*[:\-]\s*(.+)",
+            re.IGNORECASE,
+        )
+        match = task_pattern.search(message)
+        if not match:
+            return ""
+        return self._normalize_task(match.group(1))
+
+    def _extract_task_from_freeform_response(self, message):
+        task_verbs = (
+            "obtain",
+            "mine",
+            "craft",
+            "smelt",
+            "kill",
+            "cook",
+            "equip",
+            "collect",
+            "gather",
+            "harvest",
+            "make",
+            "find",
+            "open",
+            "check",
+            "eat",
+            "fish",
+            "deposit",
+            "take",
+            "use",
+            "place",
+        )
+        task_pattern = re.compile(
+            rf"^({'|'.join(task_verbs)})\b\s+.+",
+            re.IGNORECASE,
+        )
+        candidates = []
+        fragments = re.split(r"[\r\n]+|(?<=[.!?])\s+", message)
+        for fragment in fragments:
+            cleaned = self._normalize_task(fragment)
+            if not cleaned or "?" in cleaned:
+                continue
+            if task_pattern.match(cleaned):
+                candidates.append(cleaned)
+                continue
+            inline_match = re.search(
+                rf"\b({'|'.join(task_verbs)})\b\s+[^.?!]+", cleaned, re.IGNORECASE
+            )
+            if inline_match:
+                candidates.append(self._normalize_task(inline_match.group(0)))
+        return candidates[-1] if candidates else ""
+
+    def _normalize_task(self, task):
+        task = task.strip()
+        task = re.sub(
+            r"^(?:[-*]\s*)?(?:\*\*)?task(?:\*\*)?\s*[:\-]\s*",
+            "",
+            task,
+            flags=re.IGNORECASE,
+        )
+        task = re.sub(r"^(?:[-*]\s*|\*\*)+", "", task)
+        task = task.strip("`'\"* ")
+        task = re.sub(r"\s+", " ", task)
+        task = re.split(r"(?<=[.!?])\s+(?=[A-Z])", task)[0]
+        task = task.rstrip(".!? ")
+        return task.strip()
 
     def propose_next_manual_task(self):
         confirmed = False

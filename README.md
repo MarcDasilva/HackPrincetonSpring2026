@@ -80,6 +80,7 @@ K2_BASE_URL=https://api.k2think.ai/v1
 K2_MODEL=MBZUAI-IFM/K2-Think-v2
 OPENAI_API_KEY=YOUR_OPENAI_API_KEY
 OPENAI_EMBEDDING_MODEL=text-embedding-3-small
+VOYAGER_MC_PORT=YOUR_MINECRAFT_LAN_PORT
 ```
 
 After the installation process, you can run Voyager by:
@@ -101,6 +102,8 @@ voyager = Voyager(
 # start lifelong learning
 voyager.learn()
 ```
+
+If you already have a Minecraft world open to LAN, you can set `VOYAGER_MC_PORT` in your environment or `.env` file and instantiate `Voyager` without passing `mc_port` explicitly.
 
 * If you are running with `Azure Login` for the first time, it will ask you to follow the command line instruction to generate a config file.
 * For `Azure Login`, you also need to select the world and open the world to LAN by yourself. After you run `voyager.learn()` the game will pop up soon, you need to:

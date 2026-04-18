@@ -1,4 +1,4 @@
-import os.path
+import os
 import time
 import warnings
 from typing import SupportsFloat, Any, Tuple, Dict
@@ -14,6 +14,21 @@ import voyager.utils as U
 from .minecraft_launcher import MinecraftInstance
 from .process_monitor import SubprocessMonitor
 
+MC_PORT_ENV_VAR = "VOYAGER_MC_PORT"
+
+
+def resolve_mc_port(mc_port=None):
+    if mc_port in (None, ""):
+        mc_port = os.getenv(MC_PORT_ENV_VAR)
+    if mc_port in (None, ""):
+        return None
+    try:
+        return int(mc_port)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"{MC_PORT_ENV_VAR} must be an integer, got {mc_port!r}"
+        ) from exc
+
 
 class VoyagerEnv(gym.Env):
     def __init__(
@@ -25,6 +40,7 @@ class VoyagerEnv(gym.Env):
         request_timeout=600,
         log_path="./logs",
     ):
+        mc_port = resolve_mc_port(mc_port)
         if not mc_port and not azure_login:
             raise ValueError("Either mc_port or azure_login must be specified")
         if mc_port and azure_login:

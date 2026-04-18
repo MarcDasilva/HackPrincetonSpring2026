@@ -1,5 +1,6 @@
 // Craft 8 oak_planks from 2 oak_log (do the recipe 2 times): craftItem(bot, "oak_planks", 2);
-// You must place a crafting table before calling this function
+// `craftItem` can use the 2x2 inventory crafting grid for simple recipes like planks or sticks.
+// For recipes that require a crafting table, place one nearby first.
 async function craftItem(bot, name, count = 1) {
     const item = mcData.itemsByName[name];
     const craftingTable = bot.findBlock({

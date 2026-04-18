@@ -107,6 +107,9 @@ class Voyager:
         :param skill_library_dir: skill library dir
         :param resume: whether to resume from checkpoint
         """
+        # load .env values first so env-backed config is available during env setup
+        load_env_file()
+
         # init env
         self.env = VoyagerEnv(
             mc_port=mc_port,
@@ -118,8 +121,7 @@ class Voyager:
         self.reset_placed_if_failed = reset_placed_if_failed
         self.max_iterations = max_iterations
 
-        # load .env values first, then allow constructor args to override them
-        load_env_file()
+        # allow constructor args to override .env values
         if cerebras_api_key:
             os.environ["CEREBRAS_API_KEY"] = cerebras_api_key
             os.environ["K2_API_KEY"] = cerebras_api_key
@@ -221,11 +223,23 @@ class Voyager:
         if self.action_agent_rollout_num_iter < 0:
             raise ValueError("Agent must be reset before stepping")
         ai_message = self.action_agent.llm(self.messages)
-        print(f"\033[34m****Action Agent ai message****\n{ai_message.content}\033[0m")
+        ai_message_for_log = self.action_agent.format_ai_message_for_log(
+            ai_message.content
+        )
+        print(
+            f"\033[34m****Action Agent ai message****\n{ai_message_for_log}\033[0m"
+        )
         self.conversations.append(
             (self.messages[0].content, self.messages[1].content, ai_message.content)
         )
         parsed_result = self.action_agent.process_ai_message(message=ai_message)
+        if isinstance(parsed_result, str):
+            fallback_result = self.action_agent.build_task_fallback(self.task)
+            if fallback_result:
+                print(
+                    f"\033[34mUsing deterministic fallback for task {self.task}\033[0m"
+                )
+                parsed_result = fallback_result
         success = False
         if isinstance(parsed_result, dict):
             code = parsed_result["program_code"] + "\n" + parsed_result["exec_code"]
@@ -297,11 +311,12 @@ class Voyager:
             info["program_name"] = parsed_result["program_name"]
         else:
             print(
-                f"\033[32m****Action Agent human message****\n{self.messages[-1].content}\033[0m"
+                f"\033[32mAction Agent retry {self.action_agent_rollout_num_iter + 1}/"
+                f"{self.action_agent_task_max_retries} for task {self.task}\033[0m"
             )
         return self.messages, 0, done, info
 
-    def rollout(self, *, task, context, reset_env=True):
+    def rollout(self, *, task, context, reset_env=False):
         self.reset(task=task, context=context, reset_env=reset_env)
         while True:
             messages, reward, done, info = self.step()
@@ -309,7 +324,7 @@ class Voyager:
                 break
         return messages, reward, done, info
 
-    def learn(self, reset_env=True):
+    def learn(self, reset_env=False):
         if self.resume:
             # keep the inventory
             self.env.reset(
@@ -398,7 +413,7 @@ class Voyager:
             )
         return self.curriculum_agent.decompose_task(task, self.last_events)
 
-    def inference(self, task=None, sub_goals=[], reset_mode="hard", reset_env=True):
+    def inference(self, task=None, sub_goals=[], reset_mode="hard", reset_env=False):
         if not task and not sub_goals:
             raise ValueError("Either task or sub_goals must be provided")
         if not sub_goals:

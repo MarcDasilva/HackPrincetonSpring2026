@@ -34,6 +34,7 @@ There are many reasons that may cause this problem. You can try with following s
         ...
     )
     ```
+4. If you are connecting to a Minecraft world that is already open to LAN, you can set `VOYAGER_MC_PORT` in your shell or `.env` file instead of hardcoding `mc_port` in Python.
    
 ## I saw the bot left and rejoin the game after each task.
 
