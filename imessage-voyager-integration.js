@@ -10,11 +10,25 @@
  * 4. Sends updates back to iMessage: "⛏️ Miner: Mining iron ore..."
  * 
  * Requirements:
- * - Voyager repo cloned from: https://github.com/MarcDasilva/HackPrincetonSpring2026 (voyager branch)
+ * - Voyager repo cloned from: https://github.com/MarcDasilva/HackPrincetonSprin      // Only handle text messages
+      if (message.content.type !== "text") continue;
+
+      const content = message.content.text?.trim() || "";
+      if (!content) continue;
+
+      // Skip messages the bot itself sent (loopback)
+      if (botSentTexts.has(content)) {
+        botSentTexts.delete(content);
+        continue;
+      } branch)
  * - Python 3.9+ with Voyager installed
  * - OpenAI API key (GPT-4)
  * - Minecraft running with Fabric mods
  */
+
+import { createRequire } from "module";
+const require = createRequire(import.meta.url);
+try { require("dotenv").config(); } catch (e) { /* dotenv optional */ }
 
 import { Spectrum } from "spectrum-ts";
 import { imessage } from "spectrum-ts/providers/imessage";
@@ -32,14 +46,24 @@ const __dirname = path.dirname(__filename);
 
 const MY_NUMBER = "+19054629158";
 const SIMULATION_MODE = false; // ← Set to false when Voyager is fully setup (NOW READY!)
-const VOYAGER_PATH = process.env.VOYAGER_PATH || "/Users/williamzhang/Hackathon!!/hackPrinceton"; // Path to Voyager repo (current directory)
+const VOYAGER_PATH = process.env.VOYAGER_PATH || "/Users/williamzhang/Hackathon!!/voyager-repo"; // Path to Voyager repo
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "YOUR_API_KEY_HERE";
+const USE_PHOTON_CLOUD = !!(process.env.PHOTON_PROJECT_ID && process.env.PHOTON_PROJECT_SECRET);
 
-// Agent Configurations
-const agents = {
+// Group Chat Members - Add any phone numbers here (only used if not using Photon Cloud)
+const GROUP_MEMBERS = [
+  "+19054629158", // Your number
+  // Add more numbers:
+  // "+1234567890",
+  // "+0987654321",
+];
+
+// All available agent definitions
+const AGENT_DEFINITIONS = {
   planner: {
     name: "🧠 Planner",
     emoji: "🧠",
+    description: "Strategy, planning, coordination",
     keywords: ["plan", "strategy", "organize", "coordinate", "what should", "how to"],
     simResponses: [
       "Analyzed terrain - found optimal location at (100, 64, -200)",
@@ -51,6 +75,7 @@ const agents = {
   builder: {
     name: "🏗️ Builder",
     emoji: "🏗️",
+    description: "Building, crafting, construction",
     keywords: ["build", "construct", "create", "craft", "make", "place"],
     simResponses: [
       "Built structure successfully! Used 24 wood planks",
@@ -62,6 +87,7 @@ const agents = {
   miner: {
     name: "⛏️ Miner",
     emoji: "⛏️",
+    description: "Mining, gathering, resource collection",
     keywords: ["mine", "gather", "collect", "dig", "find", "get"],
     simResponses: [
       "Mined 16 iron ore from depth Y=12",
@@ -70,7 +96,45 @@ const agents = {
       "Gathered 32 oak wood logs",
     ],
   },
+  explorer: {
+    name: "🗺️ Explorer",
+    emoji: "🗺️",
+    description: "Exploring, scouting, map discovery",
+    keywords: ["explore", "scout", "map", "discover", "navigate", "where", "find area"],
+    simResponses: [
+      "Explored 500 blocks north - found desert biome",
+      "Scouted location: stronghold at (234, 45, -678)",
+      "Discovered village 300 blocks east",
+      "Mapped cave system, 3 exits found",
+    ],
+  },
+  farmer: {
+    name: "🌾 Farmer",
+    emoji: "🌾",
+    description: "Farming, food, crops, animals",
+    keywords: ["farm", "grow", "harvest", "food", "crop", "animal", "breed"],
+    simResponses: [
+      "Planted 16 wheat seeds, ready in ~5 min",
+      "Harvested 32 carrots and 16 potatoes",
+      "Built animal pen with 4 cows and 3 sheep",
+      "Composted materials, gained 8 bone meal",
+    ],
+  },
 };
+
+// Per-group agent registry: spaceId → Set of agent keys
+const groupAgents = new Map();
+
+function getGroupAgents(spaceId) {
+  if (!groupAgents.has(spaceId)) {
+    // Default: empty — require /addagent before routing any messages
+    groupAgents.set(spaceId, new Set());
+  }
+  return groupAgents.get(spaceId);
+}
+
+// Legacy alias used elsewhere in the file
+const agents = AGENT_DEFINITIONS;
 
 // ============================================================================
 // VOYAGER SIMULATOR (for testing without Minecraft)
@@ -162,16 +226,9 @@ sys.path.insert(0, "${this.voyagerPath}")
 
 from voyager import Voyager
 
-# Configure Voyager
-azure_login = {
-    "client_id": os.getenv("AZURE_CLIENT_ID", "YOUR_CLIENT_ID"),
-    "redirect_url": "https://127.0.0.1/auth-response",
-    "version": "fabric-loader-0.14.18-1.19",
-}
-
 print("[VOYAGER] Initializing...")
 voyager = Voyager(
-    azure_login=azure_login,
+    mc_port=25565,
     openai_api_key="${this.openaiKey}",
     ckpt_dir="./ckpt",
     resume=False,
@@ -254,7 +311,9 @@ except Exception as e:
       this.taskQueue.push({ agentType, command, statusCallback });
       return this.taskQueue.length;
     } else {
-      this.executeTask(agentType, command, statusCallback);
+      this.executeTask(agentType, command, statusCallback).catch((err) => {
+        console.error('[Voyager] Task error (non-fatal):', err.message);
+      });
       return 0;
     }
   }
@@ -270,10 +329,12 @@ except Exception as e:
 // AGENT ROUTER
 // ============================================================================
 
-function routeToAgent(message) {
+function routeToAgent(message, spaceId) {
   const lowerMsg = message.toLowerCase();
+  const activeAgents = spaceId ? getGroupAgents(spaceId) : new Set(Object.keys(AGENT_DEFINITIONS));
 
   for (const [agentType, agent] of Object.entries(agents)) {
+    if (!activeAgents.has(agentType)) continue; // skip if not registered in this group
     for (const keyword of agent.keywords) {
       if (lowerMsg.includes(keyword)) {
         return { agentType, agent };
@@ -304,6 +365,45 @@ function needsCollaboration(message) {
 }
 
 // ============================================================================
+// GROUP CHAT MANAGEMENT
+// ============================================================================
+
+/**
+ * Create or get existing group chat with specified members
+ * @param {Spectrum} app - Spectrum app instance
+ * @param {string[]} members - Array of phone numbers
+ * @returns {Promise<Space>} - Group chat space
+ */
+async function getOrCreateGroupChat(app, members) {
+  try {
+    console.log(`📱 Creating group chat with members: ${members.join(", ")}`);
+
+    // spectrum-ts: open a conversation with multiple participants = group chat
+    // The space ID for a group is the sorted members joined by ";+;"
+    const groupId = members.sort().join(";+;");
+
+    // Get or open the conversation space
+    const space = await app.getSpace(groupId);
+
+    if (space) {
+      console.log(`✅ Group chat ready: ${groupId}`);
+      return space;
+    }
+
+    // Fallback: return a minimal send-capable object
+    return {
+      id: groupId,
+      send: async (text) => {
+        await app.sendMessage({ to: groupId, text });
+      }
+    };
+  } catch (error) {
+    console.error("❌ Error creating group chat:", error.message);
+    throw error;
+  }
+}
+
+// ============================================================================
 // MAIN BOT
 // ============================================================================
 
@@ -326,11 +426,24 @@ async function main() {
 
   // Initialize Spectrum iMessage Client
   console.log("📱 Connecting to iMessage...");
-  const app = await Spectrum({
+
+  let app;
+  app = await Spectrum({
     providers: [imessage.config({ local: true })],
   });
+  console.log("💻 Using local iMessage mode (DMs work)");
+  console.log("");
 
-  console.log("✅ Connected!\n");
+  // Create or get group chat if GROUP_MEMBERS has multiple people
+  let mainGroupChat = null;
+  if (GROUP_MEMBERS.length > 1) {
+    console.log(`👥 Setting up group chat with ${GROUP_MEMBERS.length} members...`);
+    mainGroupChat = await getOrCreateGroupChat(app, GROUP_MEMBERS);
+    console.log(`✅ Group chat ready!\n`);
+    
+    // Send welcome message to group
+    await mainGroupChat.send("🤖 Minecraft AI is online! Send commands like 'mine iron ore' or 'build a house'");
+  }
 
   console.log("💬 Monitoring group chats for commands\n");
   console.log("📝 Example commands to try in a GROUP CHAT:");
@@ -342,117 +455,119 @@ async function main() {
 
   const seenMessages = new Set();
 
+  // Track messages the bot itself sends so we can ignore the loopback
+  const botSentTexts = new Set();
+
+  // Track chats we've already welcomed so we only send the intro once
+  const welcomedSpaces = new Set();
+
   for await (const [space, message] of app.messages) {
     try {
       // Skip duplicates
       if (seenMessages.has(message.id)) continue;
       seenMessages.add(message.id);
 
-      // Skip own messages
-      if (message.sender.id === MY_NUMBER || message.sender.id === "") {
-        continue;
-      }
-
-      // ONLY process group chats
-      const isGroupChat =
-        space.id.includes(";+;") || space.id.includes("group");
-
-      if (!isGroupChat) {
-        continue; // Ignore DMs
-      }
-
-      // Only process text messages
+      // Only handle text messages
       if (message.content.type !== "text") continue;
 
-      const content = message.content.text || "";
+      const content = message.content.text?.trim() || "";
+      if (!content) continue;
+
+      // Skip messages the bot itself sent (loopback — keep entry so repeated deliveries are also filtered)
+      if (botSentTexts.has(content)) continue;
+
       const sender = message.sender.name || message.sender.id;
 
-      console.log(`\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
-      console.log(`📨 [${sender}]: ${content}`);
+      console.log(`\n📨 [${sender}]: ${content}`);
 
-      // Helper to send messages back to group
-      const sendToGroup = async (text) => {
+      const reply = async (text) => {
         console.log(`📤 ${text}`);
+        botSentTexts.add(text); // mark as bot-sent before sending
         await space.send(text);
       };
 
-      // Special commands
-      if (content.toLowerCase().includes("inventory") || 
-          content.toLowerCase().includes("status")) {
-        if (SIMULATION_MODE) {
-          const inventory = voyager.getInventoryStatus();
-          const statusMsg = inventory
-            ? `📦 Current Inventory: ${inventory}`
-            : `📦 Inventory is empty`;
-          await sendToGroup(statusMsg);
+      // ── /addagent — adds an agent to THIS chat ────────────────────────────
+      if (content.startsWith("/addagent")) {
+        const agentKey = content.split(" ")[1]?.toLowerCase();
+        if (agentKey && AGENT_DEFINITIONS[agentKey]) {
+          getGroupAgents(space.id).add(agentKey);
+          const a = AGENT_DEFINITIONS[agentKey];
+
+          // First time any agent is added to this chat → send welcome
+          if (!welcomedSpaces.has(space.id)) {
+            welcomedSpaces.add(space.id);
+            await reply(
+              `${a.emoji} ${a.name} has joined the chat!\n\n` +
+              `I can control a Minecraft bot. Just say something like:\n` +
+              `"${a.keywords[0]} ..." and I'll handle it in Minecraft.\n\n` +
+              `Add more agents with /addagent [name]\n` +
+              `Available: miner, builder, planner, explorer, farmer`
+            );
+          } else {
+            await reply(`${a.emoji} ${a.name} has joined the chat! (${a.description})`);
+          }
         } else {
-          await sendToGroup("📦 Status check not available in real mode yet");
+          const available = Object.entries(AGENT_DEFINITIONS)
+            .map(([k, a]) => `${a.emoji} ${k}`)
+            .join(", ");
+          await reply(`❓ Unknown agent. Available: ${available}`);
         }
         continue;
       }
 
-      // Route to agent
-      const routing = routeToAgent(content);
-
-      if (routing) {
-        const { agentType, agent } = routing;
-
-        // Execute task via Voyager
-        if (SIMULATION_MODE) {
-          // Simulation mode
-          const result = await voyager.executeTask(agentType, content);
-          const response = result.success
-            ? `${agent.emoji} ${agent.name}: ${result.result}`
-            : `${agent.emoji} ${agent.name}: ❌ ${result.error}`;
-          await sendToGroup(response);
+      // ── /removeagent ──────────────────────────────────────────────────────
+      if (content.startsWith("/removeagent")) {
+        const agentKey = content.split(" ")[1]?.toLowerCase();
+        if (agentKey && AGENT_DEFINITIONS[agentKey]) {
+          getGroupAgents(space.id).delete(agentKey);
+          const a = AGENT_DEFINITIONS[agentKey];
+          await reply(`🗑️ ${a.emoji} ${a.name} has left the chat.`);
         } else {
-          // Real Voyager mode
-          try {
-            await sendToGroup(`${agent.emoji} ${agent.name}: Starting task...`);
-            
-            const queuePos = voyager.queueTask(agentType, content, async (status) => {
-              await sendToGroup(status);
-            });
-            
-            if (queuePos > 0) {
-              await sendToGroup(`${agent.emoji} Task queued (position: ${queuePos})`);
-            }
-          } catch (error) {
-            await sendToGroup(`${agent.emoji} ${agent.name}: ❌ Error: ${error.message}`);
-          }
+          await reply(`❓ Unknown agent: ${agentKey}`);
         }
-
-        // Check for multi-agent collaboration
-        if (SIMULATION_MODE && needsCollaboration(content)) {
-          console.log(`🤝 Triggering collaborative response...`);
-
-          await new Promise((resolve) => setTimeout(resolve, 1500));
-
-          await sendToGroup(
-            "🧠 Planner: Complex task detected. I'll coordinate Builder and Miner."
-          );
-
-          await new Promise((resolve) => setTimeout(resolve, 1000));
-
-          await sendToGroup("⛏️ Miner: Ready to gather resources!");
-
-          await new Promise((resolve) => setTimeout(resolve, 1000));
-
-          await sendToGroup(
-            "🏗️ Builder: Standing by for construction once materials arrive."
-          );
-        }
-      } else {
-        // No agent matched - general response
-        const helpMsg =
-          "🤖 Available agents:\n" +
-          "🧠 Planner - strategy, planning\n" +
-          "🏗️ Builder - building, crafting\n" +
-          "⛏️ Miner - mining, gathering\n" +
-          "\nTry: 'mine iron ore' or 'build shelter'";
-
-        await sendToGroup(helpMsg);
+        continue;
       }
+
+      // ── /agents — list what's active in this chat ─────────────────────────
+      if (content === "/agents") {
+        const active = getGroupAgents(space.id);
+        if (active.size === 0) {
+          await reply("No agents added yet. Use /addagent [name] to add one.\nAvailable: miner, builder, planner, explorer, farmer");
+        } else {
+          const list = [...active].map(k => `${AGENT_DEFINITIONS[k].emoji} ${k}`).join(", ");
+          await reply(`🤖 Active agents: ${list}`);
+        }
+        continue;
+      }
+
+      // ── /help ─────────────────────────────────────────────────────────────
+      if (content === "/help") {
+        await reply(
+          "🤖 Commands:\n" +
+          "/addagent [name] — add an agent to this chat\n" +
+          "/removeagent [name] — remove an agent\n" +
+          "/agents — list active agents\n\n" +
+          "Once an agent is added, just type naturally:\n" +
+          "'mine iron ore', 'build a shelter', 'plan a base'"
+        );
+        continue;
+      }
+
+      // ── Only route if at least one agent has been added to this chat ──────
+      const activeAgents = getGroupAgents(space.id);
+      if (activeAgents.size === 0) continue; // no agents here — ignore
+
+      const routing = routeToAgent(content, space.id);
+      if (!routing) continue; // message didn't match any agent keyword — ignore
+
+      const { agentType, agent } = routing;
+      console.log(`🎯 → ${agent.name}: "${content}"`);
+
+      // Confirm to the user, then run Voyager silently (no further updates)
+      await reply(`${agent.emoji} ${agent.name}: on it!`);
+
+      voyager.queueTask(agentType, content, null); // null = no iMessage callbacks
+
     } catch (error) {
       console.error("❌ Error:", error.message);
     }
