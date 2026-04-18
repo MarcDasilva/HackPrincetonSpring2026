@@ -103,6 +103,13 @@ voyager.learn()
 
 If you already have a Minecraft world open to LAN, you can set `VOYAGER_MC_PORT` in your environment or `.env` file and instantiate `Voyager` without passing `mc_port` explicitly.
 
+To run multiple bots at once against the same LAN world, give each Voyager process its own local bridge port, Minecraft username, and checkpoint directory. For example:
+```bash
+python3 interactive.py --server-port 3000 --bot-username bot1 --ckpt-dir ckpt-bot1
+python3 interactive.py --server-port 3001 --bot-username bot2 --ckpt-dir ckpt-bot2
+```
+Both commands can use the same `VOYAGER_MC_PORT`, but each bot must have a distinct `--server-port`, `--bot-username`, and `--ckpt-dir`.
+
 * If you are running with `Azure Login` for the first time, it will ask you to follow the command line instruction to generate a config file.
 * For `Azure Login`, you also need to select the world and open the world to LAN by yourself. After you run `voyager.learn()` the game will pop up soon, you need to:
   1. Select `Singleplayer` and press `Create New World`.

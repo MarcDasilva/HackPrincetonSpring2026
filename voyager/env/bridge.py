@@ -15,6 +15,8 @@ from .minecraft_launcher import MinecraftInstance
 from .process_monitor import SubprocessMonitor
 
 MC_PORT_ENV_VAR = "VOYAGER_MC_PORT"
+SERVER_PORT_ENV_VAR = "VOYAGER_SERVER_PORT"
+BOT_USERNAME_ENV_VAR = "VOYAGER_BOT_USERNAME"
 
 
 def resolve_mc_port(mc_port=None):
@@ -30,6 +32,26 @@ def resolve_mc_port(mc_port=None):
         ) from exc
 
 
+def resolve_server_port(server_port=None):
+    if server_port in (None, ""):
+        server_port = os.getenv(SERVER_PORT_ENV_VAR, 3000)
+    try:
+        return int(server_port)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"{SERVER_PORT_ENV_VAR} must be an integer, got {server_port!r}"
+        ) from exc
+
+
+def resolve_bot_username(bot_username=None):
+    if bot_username in (None, ""):
+        bot_username = os.getenv(BOT_USERNAME_ENV_VAR, "bot")
+    bot_username = str(bot_username).strip()
+    if not bot_username:
+        raise ValueError(f"{BOT_USERNAME_ENV_VAR} must not be empty")
+    return bot_username
+
+
 class VoyagerEnv(gym.Env):
     def __init__(
         self,
@@ -37,10 +59,13 @@ class VoyagerEnv(gym.Env):
         azure_login=None,
         server_host="http://127.0.0.1",
         server_port=3000,
+        bot_username="bot",
         request_timeout=600,
         log_path="./logs",
     ):
         mc_port = resolve_mc_port(mc_port)
+        server_port = resolve_server_port(server_port)
+        bot_username = resolve_bot_username(bot_username)
         if not mc_port and not azure_login:
             raise ValueError("Either mc_port or azure_login must be specified")
         if mc_port and azure_login:
@@ -51,6 +76,7 @@ class VoyagerEnv(gym.Env):
         self.azure_login = azure_login
         self.server = f"{server_host}:{server_port}"
         self.server_port = server_port
+        self.bot_username = bot_username
         self.request_timeout = request_timeout
         self.log_path = log_path
         self.mineflayer = self.get_mineflayer_process(server_port)
@@ -157,6 +183,7 @@ class VoyagerEnv(gym.Env):
 
         self.reset_options = {
             "port": self.mc_port,
+            "username": self.bot_username,
             "reset": options.get("mode", "hard"),
             "inventory": options.get("inventory", {}),
             "equipment": options.get("equipment", []),

@@ -17,6 +17,7 @@ class Voyager:
         mc_port: int = None,
         azure_login: Dict[str, str] = None,
         server_port: int = 3000,
+        bot_username: str = "bot",
         cerebras_api_key: str = None,
         openai_api_key: str = None,
         cerebras_base_url: str = None,
@@ -58,6 +59,7 @@ class Voyager:
         :param mc_port: minecraft in-game port
         :param azure_login: minecraft login config
         :param server_port: mineflayer port
+        :param bot_username: minecraft username for the mineflayer bot
         :param cerebras_api_key: cerebras api key for all chat completions
         :param openai_api_key: openai api key for embeddings used by Chroma retrieval
         :param cerebras_base_url: cerebras-compatible OpenAI base url
@@ -111,6 +113,7 @@ class Voyager:
             mc_port=mc_port,
             azure_login=azure_login,
             server_port=server_port,
+            bot_username=bot_username,
             request_timeout=env_request_timeout,
         )
         self.env_wait_ticks = env_wait_ticks
@@ -336,11 +339,16 @@ class Voyager:
                 break
         return messages, reward, done, info
 
+    def run_single_task_attempt(self, *, task, context, reset_env=False):
+        self.reset(task=task, context=context, reset_env=reset_env)
+        return self.step()
+
     def interactive(self, reset_mode="hard", reset_env=False):
         print("Interactive Voyager")
         print("Type a task and press Enter.")
         print("Optional context: task || context")
         print("Commands: /help, /reset, /status, /quit")
+        print("Each task entry runs one attempt and then returns to the prompt.")
         print("Press Ctrl+C during a task to interrupt and enter a new one.")
 
         self.env.reset(
@@ -394,11 +402,9 @@ class Voyager:
             if "||" in raw:
                 task, context = [part.strip() for part in raw.split("||", 1)]
 
-            print(
-                f"\033[35mStarting task {task} for at most {self.action_agent_task_max_retries} times\033[0m"
-            )
+            print(f"\033[35mStarting task {task} for one attempt\033[0m")
             try:
-                _, _, _, info = self.rollout(
+                _, _, _, info = self.run_single_task_attempt(
                     task=task,
                     context=context,
                     reset_env=reset_env,
@@ -422,7 +428,7 @@ class Voyager:
                 self.skill_manager.add_new_skill(info)
                 print(f"\033[35mTask succeeded: {task}\033[0m")
             else:
-                print(f"\033[35mTask failed: {task}\033[0m")
+                print(f"\033[35mTask attempt finished without success: {task}\033[0m")
 
     def learn(self, reset_env=True):
         if self.resume:
