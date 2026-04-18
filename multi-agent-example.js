@@ -66,7 +66,7 @@ async function main() {
 
   for await (const [space, message] of app.messages) {
     // IMPORTANT: Skip your own messages to avoid infinite loops!
-    const myNumber = "+19054629158"; // Change this to your actual number if different
+    const myNumber = "+16504459079"; // Change this to your actual number if different
     
     if (message.sender.id === myNumber || message.sender.id === "") {
       continue; // Skip bot's own messages

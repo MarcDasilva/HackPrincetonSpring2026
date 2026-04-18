@@ -36,6 +36,7 @@ import { spawn } from "child_process";
 import path from "path";
 import fs from "fs";
 import { fileURLToPath } from "url";
+import { OpenClawExecutor } from "./services/openclaw-executor.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -44,11 +45,18 @@ const __dirname = path.dirname(__filename);
 // CONFIGURATION
 // ============================================================================
 
-const MY_NUMBER = "+19054629158";
+const MY_NUMBER = "+16504459079";
 const SIMULATION_MODE = false; // ← Set to false when Voyager is fully setup (NOW READY!)
 const VOYAGER_PATH = process.env.VOYAGER_PATH || "/Users/williamzhang/Hackathon!!/voyager-repo"; // Path to Voyager repo
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "YOUR_API_KEY_HERE";
 const USE_PHOTON_CLOUD = !!(process.env.PHOTON_PROJECT_ID && process.env.PHOTON_PROJECT_SECRET);
+
+// OpenClaw VM connection — set OPENCLAW_VM_URL to your partner's Daytona VM address,
+// or set OPENCLAW_MOCK=true to test locally without a VM.
+const USE_OPENCLAW = !!(process.env.OPENCLAW_VM_URL);
+const OPENCLAW_VM_URL = process.env.OPENCLAW_VM_URL || "http://localhost:3001";
+const OPENCLAW_API_KEY = process.env.OPENCLAW_API_KEY || null;
+const OPENCLAW_MOCK = process.env.OPENCLAW_MOCK === "true";
 
 // Group Chat Members - Add any phone numbers here (only used if not using Photon Cloud)
 const GROUP_MEMBERS = [

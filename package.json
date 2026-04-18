@@ -26,6 +26,6 @@
   "dependencies": {
     "@photon-ai/imessage-kit": "latest",
     "mineflayer": "^4.37.0",
-    "spectrum-ts": "latest"
+    "spectrum-ts": "^0.4.0"
   }
 }
