@@ -25,9 +25,13 @@ function simulationResult(taskBrief) {
 }
 
 export class VoyagerAdapter {
-  constructor({ voyagerPath, simulationMode = true, logger }) {
+  constructor({ voyagerPath, pythonPath = "python3", ckptDir = null, minecraft = {}, simulationMode = true, workerId = "worker", logger }) {
     this.voyagerPath = voyagerPath;
+    this.pythonPath = pythonPath;
+    this.ckptDir = ckptDir;
+    this.minecraft = minecraft;
     this.simulationMode = simulationMode || !voyagerPath;
+    this.workerId = workerId;
     this.logger = logger;
     this.currentProcess = null;
   }
@@ -39,8 +43,11 @@ export class VoyagerAdapter {
       `sys.path.insert(0, ${JSON.stringify(this.voyagerPath)})`,
       "from voyager import Voyager",
       `task = ${JSON.stringify(taskBrief.objective)}`,
+      `worker_id = ${JSON.stringify(this.workerId)}`,
+      `default_ckpt = os.path.join(os.getcwd(), "ckpt", worker_id)`,
+      `ckpt_dir = ${JSON.stringify(this.ckptDir)} or os.getenv("VOYAGER_CKPT_DIR") or default_ckpt`,
       "print('[VOYAGER] Initializing')",
-      "voyager = Voyager(ckpt_dir='./ckpt', resume=True)",
+      "voyager = Voyager(ckpt_dir=ckpt_dir, resume=True)",
       "print('[VOYAGER] Executing task: ' + task)",
       "sub_goals = voyager.decompose_task(task=task)",
       "voyager.inference(sub_goals=sub_goals)",
@@ -50,9 +57,9 @@ export class VoyagerAdapter {
     await fs.writeFile(tempFile, script);
 
     return new Promise((resolve, reject) => {
-      this.currentProcess = spawn("python3", [tempFile], {
+      this.currentProcess = spawn(this.pythonPath, [tempFile], {
         cwd: this.voyagerPath,
-        env: { ...process.env, PYTHONUNBUFFERED: "1" },
+        env: this.buildVoyagerEnv(),
       });
       let stdout = "";
       let stderr = "";
@@ -81,5 +88,19 @@ export class VoyagerAdapter {
 
   async getLocalStatus() {
     return { mode: this.simulationMode ? "simulation" : "real", busy: Boolean(this.currentProcess), voyagerPath: this.voyagerPath };
+  }
+
+  buildVoyagerEnv() {
+    const env = {
+      ...process.env,
+      PYTHONUNBUFFERED: "1",
+      WORKER_ID: this.workerId,
+    };
+    if (this.minecraft.host) env.VOYAGER_MC_HOST = this.minecraft.host;
+    if (this.minecraft.port) env.VOYAGER_MC_PORT = String(this.minecraft.port);
+    if (this.minecraft.serverPort) env.VOYAGER_SERVER_PORT = String(this.minecraft.serverPort);
+    if (this.minecraft.botUsername) env.VOYAGER_BOT_USERNAME = this.minecraft.botUsername;
+    if (this.ckptDir) env.VOYAGER_CKPT_DIR = this.ckptDir;
+    return env;
   }
 }

@@ -12,7 +12,16 @@ const store = await createStateStore(config);
 const openclaw = createOpenClawClients(config);
 const voyager = new VoyagerAdapter({
   voyagerPath: config.voyager.path,
+  pythonPath: config.voyager.pythonPath,
+  ckptDir: config.voyager.ckptDir,
+  minecraft: {
+    host: config.voyager.mcHost,
+    port: config.voyager.mcPort,
+    serverPort: config.voyager.serverPort,
+    botUsername: config.voyager.botUsername,
+  },
   simulationMode: config.voyager.simulationMode,
+  workerId: config.workerId,
   logger,
 });
 const runtime = new WorkerRuntime({

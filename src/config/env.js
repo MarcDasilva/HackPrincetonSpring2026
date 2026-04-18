@@ -38,6 +38,12 @@ const envSchema = z.object({
   }),
   voyager: z.object({
     path: z.string().nullable(),
+    pythonPath: z.string(),
+    ckptDir: z.string().nullable(),
+    mcHost: z.string().nullable(),
+    mcPort: z.number().int().positive().nullable(),
+    serverPort: z.number().int().positive().nullable(),
+    botUsername: z.string().nullable(),
     simulationMode: z.boolean(),
   }),
   dedalus: z.object({
@@ -89,6 +95,12 @@ export function loadEnv(raw = process.env) {
     },
     voyager: {
       path: nullableString(raw.VOYAGER_PATH),
+      pythonPath: raw.VOYAGER_PYTHON || "python3",
+      ckptDir: nullableString(raw.VOYAGER_CKPT_DIR),
+      mcHost: nullableString(raw.VOYAGER_MC_HOST),
+      mcPort: raw.VOYAGER_MC_PORT ? intFromEnv(raw.VOYAGER_MC_PORT, 25565) : null,
+      serverPort: raw.VOYAGER_SERVER_PORT ? intFromEnv(raw.VOYAGER_SERVER_PORT, 3000) : null,
+      botUsername: nullableString(raw.VOYAGER_BOT_USERNAME),
       simulationMode: boolFromEnv(raw.VOYAGER_SIMULATION_MODE, true),
     },
     dedalus: {
