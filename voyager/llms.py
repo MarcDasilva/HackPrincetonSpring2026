@@ -126,10 +126,14 @@ class OpenAIEmbeddingFunction:
         self.model_name = model_name or os.getenv(
             "OPENAI_EMBEDDING_MODEL", "text-embedding-3-small"
         )
-        self.client = OpenAI(
-            api_key=api_key,
-            timeout=request_timeout,
-        )
+        client_kwargs = {
+            "api_key": api_key,
+            "timeout": request_timeout,
+        }
+        base_url = os.getenv("OPENAI_EMBEDDING_BASE_URL") or _resolve_chat_base_url()
+        if base_url:
+            client_kwargs["base_url"] = base_url
+        self.client = OpenAI(**client_kwargs)
 
     def embed_documents(self, texts):
         if not texts:
@@ -137,6 +141,7 @@ class OpenAIEmbeddingFunction:
         response = self.client.embeddings.create(
             model=self.model_name,
             input=texts,
+            encoding_format="float",
         )
         return [item.embedding for item in response.data]
 
