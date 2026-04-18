@@ -232,7 +232,7 @@ async function main() {
   const seenMessages = new Set();
   
   // Your phone number - update this to match YOUR actual number
-  const myNumber = process.env.IMESSAGE_BOT_ID || "+19054629158"; // ← CHANGE THIS TO YOUR NUMBER!
+  const myNumber = process.env.IMESSAGE_BOT_ID || "+16504459079"; // ← CHANGE THIS TO YOUR NUMBER!
 
   // Main message loop
   for await (const [space, message] of app.messages) {
