@@ -1,0 +1,41 @@
+{
+  "name": "openclaw-minecraft-orchestrator",
+  "version": "0.1.0",
+  "description": "Photon iMessage to OpenClaw/Voyager multi-agent Minecraft orchestration.",
+  "type": "module",
+  "main": "src/services/run-foreman.js",
+  "scripts": {
+    "start": "node src/services/run-foreman.js",
+    "foreman": "node src/services/run-foreman.js",
+    "photon": "node src/services/run-photon-bridge.js",
+    "worker": "node src/services/run-worker.js",
+    "worker:miner": "WORKER_ID=worker-miner node src/services/run-worker.js",
+    "worker:builder": "WORKER_ID=worker-builder node src/services/run-worker.js",
+    "worker:forager": "WORKER_ID=worker-forager node src/services/run-worker.js",
+    "simulation": "node src/simulation/run-demo.js",
+    "simulation:seed": "node src/simulation/seed-demo.js",
+    "simulation:enqueue": "node src/simulation/enqueue-command.js",
+    "simulation:verify": "node src/simulation/verify-demo.js",
+    "test": "node --test",
+    "group-agents": "node src/services/run-foreman.js --legacy=group-agents",
+    "voyager": "node src/services/run-worker.js --legacy=voyager",
+    "multi-agent": "node src/services/run-foreman.js --legacy=multi-agent",
+    "help": "node src/services/help.js"
+  },
+  "keywords": [
+    "openclaw",
+    "minecraft",
+    "voyager",
+    "photon",
+    "supabase",
+    "dedalus"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@supabase/supabase-js": "^2.49.1",
+    "dotenv": "^16.4.7",
+    "spectrum-ts": "latest",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {}
+}
