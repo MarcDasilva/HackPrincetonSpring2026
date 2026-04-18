@@ -1,6 +1,6 @@
 import { Redis } from '@upstash/redis';
 
-const redis = new Redis({
+const getRedis = () => new Redis({
   url: process.env.UPSTASH_REDIS_URL!,
   token: process.env.UPSTASH_REDIS_TOKEN!,
 });
@@ -12,6 +12,7 @@ export class JobQueueService {
    */
   async claimJob(jobId: string, agentId: string): Promise<boolean> {
     const lockKey = `job_lock:${jobId}`;
+    const redis = getRedis();
     const acquired = await redis.set(lockKey, agentId, { nx: true, ex: 300 }); // 5 min timeout
     if (acquired) {
       console.log(`[JOBS] Agent ${agentId} successfully claimed ${jobId}`);
@@ -22,6 +23,7 @@ export class JobQueueService {
   }
 
   async releaseJob(jobId: string) {
+    const redis = getRedis();
     await redis.del(`job_lock:${jobId}`);
     console.log(`[JOBS] Released lock for ${jobId}`);
   }
@@ -30,6 +32,7 @@ export class JobQueueService {
    * Check who currently holds a job lock.
    */
   async getJobHolder(jobId: string): Promise<string | null> {
+    const redis = getRedis();
     return await redis.get(`job_lock:${jobId}`);
   }
 }
