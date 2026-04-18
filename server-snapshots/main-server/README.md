@@ -7,4 +7,5 @@ Captured structure:
 Notes:
 - `openclaw-workspaces/` was empty at capture time.
 - Live OpenClaw tokens were redacted before committing this snapshot.
+- `openclaw-gateways/start-openclaw-gateways.sh` sources `openclaw-gateway.env`.
 - URLs, ports, profile names, log paths, and process layout were preserved.
