@@ -1,3 +1,27 @@
+# HackPrinceton iMessage + Voyager Integration
+
+**Control Minecraft with iMessage using AI!** 🎮📱
+
+Send messages like "mine iron ore" or "build a house" in your iMessage group chat, and watch AI play Minecraft for you.
+
+## Quick Start
+
+```bash
+# 1. Install dependencies
+npm install
+pip install -e .
+
+# 2. Set your OpenAI API key
+export OPENAI_API_KEY="sk-your-key-here"
+
+# 3. Run the bot
+npm run voyager
+```
+
+Now send commands in your iMessage **group chat**!
+
+---
+
 # Voyager: An Open-Ended Embodied Agent with Large Language Models
 <div align="center">
 
