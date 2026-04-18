@@ -47,7 +47,7 @@ export class WorkerRuntime {
       agentId: this.workerId,
       taskBrief,
     });
-    await publishWorkerStatus(this.store, this.workerId, claim.public_text, { job_id: job.job_id, status: "claimed" });
+    await publishWorkerStatus(this.store, this.workerId, claim.public_text, { job_id: job.job_id, status: "claimed", source_chat: taskBrief.source_chat });
 
     try {
       await this.store.addJobEvent(job.id, this.workerId, "started", {});
@@ -60,7 +60,7 @@ export class WorkerRuntime {
         taskBrief,
       });
       await markJobComplete(this.store, job, this.workerId, result);
-      await publishWorkerStatus(this.store, this.workerId, completion.public_text, { job_id: job.job_id, status: "completed" });
+      await publishWorkerStatus(this.store, this.workerId, completion.public_text, { job_id: job.job_id, status: "completed", source_chat: taskBrief.source_chat });
     } catch (error) {
       await this.store.updateJob(job.id, { status: JOB_STATUS.blocked, result: { error: error.message } });
       await this.store.addJobEvent(job.id, this.workerId, "blocked", { error: error.message });
@@ -68,7 +68,7 @@ export class WorkerRuntime {
         agentId: this.workerId,
         taskBrief,
       });
-      await publishWorkerStatus(this.store, this.workerId, blocker.public_text, { job_id: job.job_id, status: "blocked" });
+      await publishWorkerStatus(this.store, this.workerId, blocker.public_text, { job_id: job.job_id, status: "blocked", source_chat: taskBrief.source_chat });
     }
   }
 }

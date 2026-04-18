@@ -29,6 +29,7 @@ export async function buildTaskBrief(store, job, worker, triggerMessage = null) 
     target: job.target,
     quantity: job.quantity,
     assigned_agent_id: worker.agent_id,
+    source_chat: triggerMessage?.source_chat || job.payload?.source_chat || "group_chat",
     success_criteria: [
       "Update jobs_history with completion or blocker result.",
       "Write any durable observations to agent_memory.",

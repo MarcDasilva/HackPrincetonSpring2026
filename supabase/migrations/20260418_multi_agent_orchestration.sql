@@ -64,6 +64,35 @@ create table if not exists public.jobs_history (
   completed_at timestamptz null
 );
 
+-- Upgrade an existing teammate-schema database in place. `create table if not exists`
+-- preserves old tables, so add orchestration columns explicitly and non-destructively.
+alter table public.world_objects add column if not exists dimension text not null default 'overworld';
+
+alter table public.agent_status add column if not exists role text not null default 'worker';
+alter table public.agent_status add column if not exists vm_name text null;
+alter table public.agent_status add column if not exists current_job_id uuid null;
+alter table public.agent_status add column if not exists health numeric null;
+alter table public.agent_status add column if not exists food integer null;
+alter table public.agent_status add column if not exists dimension text null;
+alter table public.agent_status add column if not exists x numeric null;
+alter table public.agent_status add column if not exists y numeric null;
+alter table public.agent_status add column if not exists z numeric null;
+
+alter table public.chat_messages add column if not exists source_chat text not null default 'group_chat';
+alter table public.chat_messages add column if not exists direction text not null default 'inbound';
+alter table public.chat_messages add column if not exists processing_status text not null default 'new';
+alter table public.chat_messages add column if not exists delivery_status text not null default 'skipped';
+alter table public.chat_messages add column if not exists delivered_at timestamptz null;
+
+alter table public.jobs_history add column if not exists kind text not null default 'generic';
+alter table public.jobs_history add column if not exists target text null;
+alter table public.jobs_history add column if not exists quantity integer null;
+alter table public.jobs_history add column if not exists priority numeric not null default 0;
+alter table public.jobs_history add column if not exists task_brief jsonb not null default '{}'::jsonb;
+alter table public.jobs_history add column if not exists source text not null default 'system';
+alter table public.jobs_history add column if not exists release_reason text null;
+alter table public.jobs_history add column if not exists updated_at timestamptz not null default now();
+
 do $$
 begin
   if not exists (
@@ -100,6 +129,28 @@ create table if not exists public.job_events (
   payload jsonb not null default '{}'::jsonb,
   created_at timestamptz not null default now()
 );
+
+create unique index if not exists world_objects_name_key
+  on public.world_objects(name);
+
+create unique index if not exists jobs_history_job_id_key
+  on public.jobs_history(job_id);
+
+do $$
+begin
+  if not exists (select 1 from pg_constraint where conname = 'jobs_history_assigned_agent_fkey') then
+    alter table public.jobs_history
+      add constraint jobs_history_assigned_agent_fkey
+      foreign key (assigned_agent) references public.agent_status(agent_id);
+  end if;
+
+  if not exists (select 1 from pg_constraint where conname = 'agent_memory_agent_id_fkey') then
+    alter table public.agent_memory
+      add constraint agent_memory_agent_id_fkey
+      foreign key (agent_id) references public.agent_status(agent_id) on delete cascade;
+  end if;
+end;
+$$;
 
 create index if not exists world_objects_type_updated_idx
   on public.world_objects(object_type, updated_at desc);

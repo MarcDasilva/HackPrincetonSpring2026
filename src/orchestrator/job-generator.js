@@ -13,6 +13,7 @@ export function createJobFromIntent(intent) {
     payload: {
       raw_text: intent.raw_text,
       source_message_id: intent.source_message_id,
+      source_chat: intent.source_chat,
       preferred_worker_role: intent.preferred_worker_role,
     },
   };

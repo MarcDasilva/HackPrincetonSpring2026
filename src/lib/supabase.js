@@ -85,7 +85,13 @@ export class SupabaseStateStore {
 
   async createJob(job) {
     const { data, error } = await this.client.from("jobs_history").insert(job).select().single();
-    if (error) throw error;
+    if (error) {
+      if (error.code === "23505" && job.job_id) {
+        const existing = await this.getJob(job.job_id);
+        if (existing) return existing;
+      }
+      throw error;
+    }
     return data;
   }
 
@@ -99,7 +105,11 @@ export class SupabaseStateStore {
   }
 
   async getJob(id) {
-    const { data, error } = await this.client.from("jobs_history").select("*").or(`id.eq.${id},job_id.eq.${id}`).maybeSingle();
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id);
+    const query = this.client.from("jobs_history").select("*");
+    const { data, error } = isUuid
+      ? await query.or(`id.eq.${id},job_id.eq.${id}`).maybeSingle()
+      : await query.eq("job_id", id).maybeSingle();
     if (error) throw error;
     return data;
   }

@@ -51,6 +51,12 @@ export class PhotonBridge {
       this.logger.info("Photon bridge simulation mode; no iMessage listener started");
       return;
     }
+
+    if (this.config.photon.mode === "local") {
+      await this.startLocalBridge();
+      return;
+    }
+
     const [{ Spectrum }, { imessage }] = await Promise.all([
       import("spectrum-ts"),
       import("spectrum-ts/providers/imessage"),
@@ -68,14 +74,64 @@ export class PhotonBridge {
       if (this.seen.has(message.id)) continue;
       this.seen.add(message.id);
       if (message.content?.type !== "text") continue;
+      if (message.sender?.id === "") continue;
       if (this.config.photon.selfIdentifier && message.sender?.id === this.config.photon.selfIdentifier) continue;
       if (this.config.photon.groupId && space.id !== this.config.photon.groupId) continue;
+      if (!this.config.photon.groupId && space.type && space.type !== "group") continue;
+      this.logger.info("Ingesting inbound iMessage", { source_chat: space.id, sender: message.sender?.id || message.sender?.name || "unknown" });
       await ingestInboundMessage(this.store, {
         sourceChat: space.id,
         sender: message.sender?.id || message.sender?.name || "unknown",
         text: message.content.text,
       });
     }
+  }
+
+  async startLocalBridge() {
+    const { IMessageSDK } = await import("@photon-ai/imessage-kit");
+    const sdk = new IMessageSDK();
+    const groups = await sdk.listChats({ kind: "group", sortBy: "recent", limit: 30 });
+    for (const chat of groups) {
+      if (chat.chatId) this.spaces.set(chat.chatId, { id: chat.chatId, type: "group" });
+    }
+    this.logger.info("Photon local bridge connected", {
+      known_groups: groups.length,
+      configured_group: this.config.photon.groupId || null,
+    });
+
+    this.flushOutboundLoop(sdk).catch((error) => this.logger.error("Outbound loop failed", { error: error.message }));
+    await sdk.startWatching({
+      onGroupMessage: async (message) => this.handleLocalMessage(message),
+      onDirectMessage: async (message) => {
+        if (this.config.photon.groupId) return;
+        this.logger.debug("Ignoring direct iMessage because bridge is group-chat scoped", { id: message.id });
+      },
+      onError: (error) => this.logger.error("Photon watcher error", { error: error.message }),
+    });
+
+    await new Promise(() => {});
+  }
+
+  async handleLocalMessage(message) {
+    const sourceChat = message.chatId;
+    if (sourceChat) this.spaces.set(sourceChat, { id: sourceChat, type: message.chatKind });
+    if (!sourceChat || message.chatKind !== "group") return;
+    if (this.seen.has(message.id)) return;
+    this.seen.add(message.id);
+    if (!message.text || message.kind !== "text") return;
+    if (message.isFromMe) return;
+    if (this.config.photon.groupId && sourceChat !== this.config.photon.groupId) return;
+    if (this.config.photon.selfIdentifier && message.participant === this.config.photon.selfIdentifier) return;
+
+    this.logger.info("Ingesting inbound iMessage", {
+      source_chat: sourceChat,
+      sender: message.participant || "unknown",
+    });
+    await ingestInboundMessage(this.store, {
+      sourceChat,
+      sender: message.participant || "unknown",
+      text: message.text,
+    });
   }
 
   async flushOutboundLoop(app) {
@@ -91,6 +147,11 @@ export class PhotonBridge {
       try {
         if (app) {
           const targetSpace = this.spaces.get(message.source_chat) || this.spaces.get(this.config.photon.groupId);
+          if (typeof app.send === "function" && targetSpace?.id) {
+            await app.send(targetSpace.id, { text: message.content, timeout: 30000 });
+            await this.store.updateChatMessage(message.id, { delivery_status: OUTBOUND_STATUS.delivered, delivered_at: new Date().toISOString() });
+            continue;
+          }
           if (!targetSpace) {
             this.logger.warn("Outbound message has no live Photon space yet", { id: message.id, source_chat: message.source_chat });
             continue;

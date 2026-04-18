@@ -13,6 +13,7 @@ export function parseHumanCommand(message) {
     target,
     quantity,
     source_message_id: message.id,
+    source_chat: message.source_chat,
     preferred_worker_role: shortcut.preferred_worker_role || null,
     raw_text: text,
     shortcut: shortcut.shortcut || null,
