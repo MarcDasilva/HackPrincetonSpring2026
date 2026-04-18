@@ -34,7 +34,7 @@ const __dirname = path.dirname(__filename);
 // CONFIGURATION
 // ============================================================================
 
-const MY_NUMBER = "+19054629158";
+const MY_NUMBER = "+16504459079";
 const SIMULATION_MODE = false; // ← Set to false when Voyager is fully setup (NOW READY!)
 const VOYAGER_PATH = process.env.VOYAGER_PATH || "/Users/williamzhang/Hackathon!!/voyager-repo"; // Path to Voyager repo
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "YOUR_API_KEY_HERE";
@@ -42,7 +42,7 @@ const IMESSAGE_BOT_ID = process.env.IMESSAGE_BOT_ID || MY_NUMBER;
 
 // Group Chat Members - used when Photon cloud mode is enabled for group creation
 const GROUP_MEMBERS = [
-  "+19054629158", // Your number
+  "+16504459079", // Your number
   // Add more numbers:
   // "+1234567890",
   // "+0987654321",
