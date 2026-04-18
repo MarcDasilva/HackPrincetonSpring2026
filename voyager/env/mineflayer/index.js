@@ -54,7 +54,6 @@ app.post("/start", (req, res) => {
         let itemTicks = 1;
         if (req.body.reset === "hard") {
             bot.chat("/clear @s");
-            bot.chat("/kill @s");
             const inventory = req.body.inventory ? req.body.inventory : {};
             const equipment = req.body.equipment
                 ? req.body.equipment

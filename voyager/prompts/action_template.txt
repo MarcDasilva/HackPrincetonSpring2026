@@ -28,7 +28,6 @@ You should then respond to me with code only:
     2) Reuse the above useful programs as much as possible.
         - Use `mineBlock(bot, name, count)` to collect blocks. Do not use `bot.dig` directly.
         - Use `craftItem(bot, name, count)` to craft items. Do not use `bot.craft` or `bot.recipesFor` directly.
-          `craftItem` can handle inventory crafting for simple recipes like planks and sticks, so you do not need to place a crafting table for those.
         - Use `smeltItem(bot, name count)` to smelt items. Do not use `bot.openFurnace` directly.
         - Use `placeItem(bot, name, position)` to place blocks. Do not use `bot.placeBlock` directly.
         - Use `killMob(bot, name, timeout)` to kill mobs. Do not use `bot.attack` directly.

@@ -14,7 +14,7 @@ from voyager.llms import CerebrasChatModel
 class ActionAgent:
     def __init__(
         self,
-        model_name="MBZUAI-IFM/K2-Think-v2",
+        model_name="gpt-4o-2024-08-06",
         temperature=0,
         request_timout=120,
         ckpt_dir="ckpt",
@@ -205,9 +205,7 @@ class ActionAgent:
                 babel = require("@babel/core")
                 babel_generator = require("@babel/generator").default
 
-                code = self._prepare_code_for_parse(
-                    self._extract_code_from_message(message.content)
-                )
+                code = self._extract_code_from_message(message.content)
                 parsed = babel.parse(code)
                 functions = []
                 assert len(list(parsed.program.body)) > 0, "No functions found"
@@ -253,53 +251,6 @@ class ActionAgent:
                 time.sleep(1)
         return f"Error parsing action response (before program execution): {error}"
 
-    def build_task_fallback(self, task):
-        parsed = self._parse_simple_task(task)
-        if not parsed:
-            return None
-
-        action = parsed["action"]
-        target = parsed["target"]
-        quantity = parsed["quantity"]
-        function_name = self._fallback_function_name(action, target)
-
-        if action == "craft":
-            program_code = f"""async function {function_name}(bot) {{
-    const item = mcData.itemsByName["{target}"];
-    if (!item) {{
-        throw new Error("Unknown item: {target}");
-    }}
-    let previousCount = bot.inventory.count(item.id);
-    while (bot.inventory.count(item.id) < {quantity}) {{
-        bot.chat("Crafting {target}...");
-        await craftItem(bot, "{target}", 1);
-        const currentCount = bot.inventory.count(item.id);
-        if (currentCount <= previousCount) {{
-            throw new Error("Failed to craft more {target}");
-        }}
-        previousCount = currentCount;
-    }}
-}}"""
-        elif action == "equip":
-            slot = self._infer_equip_slot(target)
-            if not slot:
-                return None
-            program_code = f"""async function {function_name}(bot) {{
-    const item = bot.inventory.findInventoryItem(mcData.itemsByName["{target}"].id);
-    if (!item) {{
-        throw new Error("Missing item to equip: {target}");
-    }}
-    await bot.equip(item, "{slot}");
-}}"""
-        else:
-            return None
-
-        return {
-            "program_code": program_code,
-            "program_name": function_name,
-            "exec_code": f"await {function_name}(bot);",
-        }
-
     def _extract_code_from_message(self, content):
         if "</think>" in content:
             content = content.split("</think>", 1)[1]
@@ -308,11 +259,11 @@ class ActionAgent:
             r"```(?:javascript|js)\s*(.*?)```", content, flags=re.DOTALL | re.IGNORECASE
         )
         if js_fences:
-            return js_fences[-1].strip()
+            return "\n\n".join(block.strip() for block in js_fences if block.strip())
 
         generic_fences = re.findall(r"```\s*(.*?)```", content, flags=re.DOTALL)
         if generic_fences:
-            return generic_fences[-1].strip()
+            return "\n\n".join(block.strip() for block in generic_fences if block.strip())
 
         async_function_index = content.find("async function")
         if async_function_index >= 0:
@@ -323,147 +274,6 @@ class ActionAgent:
             return content[function_index:].strip()
 
         return content.strip()
-
-    def format_ai_message_for_log(self, content):
-        extracted = self._extract_code_from_message(content)
-        if extracted and extracted != content.strip():
-            return extracted
-        if "</think>" in content:
-            return content.split("</think>", 1)[1].strip()
-        return content.strip()
-
-    def _parse_simple_task(self, task):
-        match = re.match(
-            r"^\s*(Craft|Equip)\s+(?:(\d+|a|an|one)\s+)?(.+?)\s*$",
-            task,
-            re.IGNORECASE,
-        )
-        if not match:
-            return None
-
-        action = match.group(1).lower()
-        quantity_token = (match.group(2) or "1").lower()
-        target = match.group(3).strip().rstrip(".")
-
-        quantity_map = {"a": 1, "an": 1, "one": 1}
-        quantity = quantity_map.get(quantity_token)
-        if quantity is None:
-            quantity = int(quantity_token)
-
-        target = target.replace(" ", "_").lower()
-        return {"action": action, "quantity": quantity, "target": target}
-
-    def _fallback_function_name(self, action, target):
-        parts = [part for part in re.split(r"[_\W]+", target) if part]
-        suffix = "".join(part.capitalize() for part in parts) or "Task"
-        return f"{action}{suffix}Fallback"
-
-    def _infer_equip_slot(self, target):
-        slot_map = {
-            "shield": "off-hand",
-            "helmet": "head",
-            "chestplate": "torso",
-            "leggings": "legs",
-            "boots": "feet",
-        }
-        for key, slot in slot_map.items():
-            if key in target:
-                return slot
-        if any(
-            tool in target
-            for tool in ["sword", "pickaxe", "axe", "shovel", "hoe", "bow"]
-        ):
-            return "hand"
-        return None
-
-    def _prepare_code_for_parse(self, code):
-        function_blocks = self._extract_function_blocks(code)
-        if not function_blocks:
-            return code.strip()
-
-        deduped_blocks = []
-        seen_names = set()
-        for block in reversed(function_blocks):
-            if block["name"] in seen_names:
-                continue
-            seen_names.add(block["name"])
-            deduped_blocks.append(block["code"])
-        deduped_blocks.reverse()
-        return "\n\n".join(deduped_blocks).strip()
-
-    def _extract_function_blocks(self, code):
-        pattern = re.compile(
-            r"(?m)^(async\s+function|function)\s+([A-Za-z_$][\w$]*)\s*\("
-        )
-        matches = list(pattern.finditer(code))
-        if not matches:
-            return []
-
-        blocks = []
-        for match in matches:
-            start = match.start()
-            name = match.group(2)
-            block = self._slice_function_block(code, start)
-            if block:
-                blocks.append({"name": name, "code": block.strip()})
-        return blocks
-
-    def _slice_function_block(self, code, start):
-        brace_start = code.find("{", start)
-        if brace_start < 0:
-            return ""
-
-        depth = 0
-        in_single = False
-        in_double = False
-        in_template = False
-        in_line_comment = False
-        in_block_comment = False
-        escaped = False
-
-        for index in range(brace_start, len(code)):
-            char = code[index]
-            next_char = code[index + 1] if index + 1 < len(code) else ""
-
-            if in_line_comment:
-                if char == "\n":
-                    in_line_comment = False
-                continue
-            if in_block_comment:
-                if char == "*" and next_char == "/":
-                    in_block_comment = False
-                continue
-            if escaped:
-                escaped = False
-                continue
-            if char == "\\" and (in_single or in_double or in_template):
-                escaped = True
-                continue
-            if not (in_single or in_double or in_template):
-                if char == "/" and next_char == "/":
-                    in_line_comment = True
-                    continue
-                if char == "/" and next_char == "*":
-                    in_block_comment = True
-                    continue
-            if char == "'" and not (in_double or in_template):
-                in_single = not in_single
-                continue
-            if char == '"' and not (in_single or in_template):
-                in_double = not in_double
-                continue
-            if char == "`" and not (in_single or in_double):
-                in_template = not in_template
-                continue
-            if in_single or in_double or in_template:
-                continue
-            if char == "{":
-                depth += 1
-            elif char == "}":
-                depth -= 1
-                if depth == 0:
-                    return code[start : index + 1]
-        return code[start:].strip()
 
     def summarize_chatlog(self, events):
         def filter_item(message: str):

@@ -12,7 +12,7 @@ from voyager.llms import CerebrasChatModel, OpenAIEmbeddingFunction
 class SkillManager:
     def __init__(
         self,
-        model_name="MBZUAI-IFM/K2-Think-v2",
+        model_name="gpt-4o-2024-08-06",
         temperature=0,
         retrieval_top_k=5,
         request_timout=120,
@@ -127,23 +127,12 @@ class SkillManager:
                 + f"The main function is `{program_name}`."
             ),
         ]
-        raw_description = self.llm(messages).content
-        skill_description = f"    // {self._sanitize_skill_description(raw_description)}"
+        skill_description = f"    // { self.llm(messages).content}"
         return f"async function {program_name}(bot) {{\n{skill_description}\n}}"
 
-    def _sanitize_skill_description(self, content):
-        if "</think>" in content:
-            content = content.split("</think>", 1)[1]
-        lines = [line.strip() for line in content.splitlines() if line.strip()]
-        if not lines:
-            return ""
-        # Prefer the last non-empty line because reasoning-heavy models often
-        # put the usable answer after a hidden/internal analysis block.
-        description = lines[-1]
-        description = description.strip("`'\" ")
-        return description
-
     def retrieve_skills(self, query):
+        if not isinstance(query, str) or not query.strip():
+            return []
         k = min(self.vectordb._collection.count(), self.retrieval_top_k)
         if k == 0:
             return []

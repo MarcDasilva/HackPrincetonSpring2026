@@ -14,9 +14,9 @@ from voyager.llms import CerebrasChatModel, OpenAIEmbeddingFunction
 class CurriculumAgent:
     def __init__(
         self,
-        model_name="MBZUAI-IFM/K2-Think-v2",
+        model_name="gpt-4o-2024-08-06",
         temperature=0,
-        qa_model_name="MBZUAI-IFM/K2-Think-v2",
+        qa_model_name="gpt-4o-2024-08-06",
         qa_temperature=0,
         request_timout=120,
         ckpt_dir="ckpt",
@@ -312,10 +312,7 @@ class CurriculumAgent:
         if max_retries == 0:
             raise RuntimeError("Max retries reached, failed to propose ai task.")
         curriculum = self.llm(messages).content
-        print(
-            f"\033[31m****Curriculum Agent ai message****\n"
-            f"{self.format_ai_message_for_log(curriculum)}\033[0m"
-        )
+        print(f"\033[31m****Curriculum Agent ai message****\n{curriculum}\033[0m")
         try:
             response = self.parse_ai_message(curriculum)
             assert "next_task" in response
@@ -331,91 +328,12 @@ class CurriculumAgent:
             )
 
     def parse_ai_message(self, message):
-        if "</think>" in message:
-            message = message.split("</think>", 1)[1]
-
-        task = self._extract_task_from_labeled_response(message)
-        if not task:
-            task = self._extract_task_from_freeform_response(message)
+        task = ""
+        for line in message.split("\n"):
+            if line.startswith("Task:"):
+                task = line[5:].replace(".", "").strip()
         assert task, "Task not found in Curriculum Agent response"
         return {"next_task": task}
-
-    def format_ai_message_for_log(self, message):
-        if "</think>" in message:
-            message = message.split("</think>", 1)[1]
-        try:
-            parsed = self.parse_ai_message(message)
-            return f"Task: {parsed['next_task']}"
-        except Exception:
-            return message.strip()
-
-    def _extract_task_from_labeled_response(self, message):
-        task_pattern = re.compile(
-            r"(?:^|\n)\s*(?:[-*]\s*)?(?:\*\*)?Task(?:\*\*)?\s*[:\-]\s*(.+)",
-            re.IGNORECASE,
-        )
-        match = task_pattern.search(message)
-        if not match:
-            return ""
-        return self._normalize_task(match.group(1))
-
-    def _extract_task_from_freeform_response(self, message):
-        task_verbs = (
-            "obtain",
-            "mine",
-            "craft",
-            "smelt",
-            "kill",
-            "cook",
-            "equip",
-            "collect",
-            "gather",
-            "harvest",
-            "make",
-            "find",
-            "open",
-            "check",
-            "eat",
-            "fish",
-            "deposit",
-            "take",
-            "use",
-            "place",
-        )
-        task_pattern = re.compile(
-            rf"^({'|'.join(task_verbs)})\b\s+.+",
-            re.IGNORECASE,
-        )
-        candidates = []
-        fragments = re.split(r"[\r\n]+|(?<=[.!?])\s+", message)
-        for fragment in fragments:
-            cleaned = self._normalize_task(fragment)
-            if not cleaned or "?" in cleaned:
-                continue
-            if task_pattern.match(cleaned):
-                candidates.append(cleaned)
-                continue
-            inline_match = re.search(
-                rf"\b({'|'.join(task_verbs)})\b\s+[^.?!]+", cleaned, re.IGNORECASE
-            )
-            if inline_match:
-                candidates.append(self._normalize_task(inline_match.group(0)))
-        return candidates[-1] if candidates else ""
-
-    def _normalize_task(self, task):
-        task = task.strip()
-        task = re.sub(
-            r"^(?:[-*]\s*)?(?:\*\*)?task(?:\*\*)?\s*[:\-]\s*",
-            "",
-            task,
-            flags=re.IGNORECASE,
-        )
-        task = re.sub(r"^(?:[-*]\s*|\*\*)+", "", task)
-        task = task.strip("`'\"* ")
-        task = re.sub(r"\s+", " ", task)
-        task = re.split(r"(?<=[.!?])\s+(?=[A-Z])", task)[0]
-        task = task.rstrip(".!? ")
-        return task.strip()
 
     def propose_next_manual_task(self):
         confirmed = False

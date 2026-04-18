@@ -10,6 +10,7 @@ _LEGACY_CEREBRAS_BASE_URL = "https://api.cerebras.ai/v1"
 _LEGACY_CEREBRAS_MODEL = "k2-think-v2"
 _DEFAULT_K2_BASE_URL = "https://api.k2think.ai/v1"
 _DEFAULT_K2_MODEL = "MBZUAI-IFM/K2-Think-v2"
+_DEFAULT_OPENAI_MODEL = "gpt-4o-2024-08-06"
 
 
 def load_env_file():
@@ -51,7 +52,7 @@ def _load_env_path(path: Path):
 class CerebrasChatModel:
     def __init__(
         self,
-        model_name=_DEFAULT_K2_MODEL,
+        model_name=_DEFAULT_OPENAI_MODEL,
         temperature=0,
         request_timeout=120,
     ):
@@ -59,17 +60,20 @@ class CerebrasChatModel:
         self.model_name = model_name or _resolve_chat_model()
         self.temperature = temperature
         self.request_timeout = request_timeout
-        api_key = os.getenv("K2_API_KEY") or os.getenv("CEREBRAS_API_KEY")
+        api_key = _resolve_chat_api_key()
         if not api_key:
             raise ValueError(
-                "K2_API_KEY or CEREBRAS_API_KEY is not set. Add one to your environment or .env file."
+                "OPENAI_API_KEY is not set. Add it to your environment or .env file."
             )
         api_key = api_key.strip().strip("{}")
-        self.client = OpenAI(
-            api_key=api_key,
-            base_url=_resolve_chat_base_url(),
-            timeout=request_timeout,
-        )
+        client_kwargs = {
+            "api_key": api_key,
+            "timeout": request_timeout,
+        }
+        base_url = _resolve_chat_base_url()
+        if base_url:
+            client_kwargs["base_url"] = base_url
+        self.client = OpenAI(**client_kwargs)
 
     def __call__(self, messages):
         response = self.client.chat.completions.create(
@@ -141,20 +145,34 @@ class OpenAIEmbeddingFunction:
 
 
 def _resolve_chat_base_url():
+    openai_base_url = os.getenv("OPENAI_BASE_URL")
+    if openai_base_url:
+        return openai_base_url
     k2_base_url = os.getenv("K2_BASE_URL")
     if k2_base_url:
         return k2_base_url
     legacy_base_url = os.getenv("CEREBRAS_BASE_URL")
     if legacy_base_url and legacy_base_url != _LEGACY_CEREBRAS_BASE_URL:
         return legacy_base_url
-    return _DEFAULT_K2_BASE_URL
+    return None
 
 
 def _resolve_chat_model():
+    openai_model = os.getenv("OPENAI_MODEL")
+    if openai_model:
+        return openai_model
     k2_model = os.getenv("K2_MODEL")
     if k2_model:
         return k2_model
     legacy_model = os.getenv("CEREBRAS_MODEL")
     if legacy_model and legacy_model != _LEGACY_CEREBRAS_MODEL:
         return legacy_model
-    return _DEFAULT_K2_MODEL
+    return _DEFAULT_OPENAI_MODEL
+
+
+def _resolve_chat_api_key():
+    return (
+        os.getenv("OPENAI_API_KEY")
+        or os.getenv("K2_API_KEY")
+        or os.getenv("CEREBRAS_API_KEY")
+    )

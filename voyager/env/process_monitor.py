@@ -77,7 +77,17 @@ class SubprocessMonitor:
         self.logger.info("Stopping subprocess.")
         if self.process and self.process.is_running():
             self.process.terminate()
-            self.process.wait()
+            try:
+                self.process.wait(timeout=5)
+            except psutil.TimeoutExpired:
+                self.logger.warning(
+                    "Subprocess did not terminate in time; killing it."
+                )
+                self.process.kill()
+                self.process.wait(timeout=5)
+        if self.thread and self.thread.is_alive():
+            self.thread.join(timeout=1)
+        self.process = None
 
     # def __del__(self):
     #     if self.process.is_running():

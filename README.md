@@ -72,13 +72,11 @@ You need to install fabric mods to support all the features in Voyager. Remember
 Follow the instructions in [Fabric Mods Install](installation/fabric_mods_install.md) to install the mods.
 
 # Getting Started
-Voyager now uses the K2 chat endpoint for all chat completions and OpenAI embeddings for Chroma retrieval. Put both keys in a local `.env` file:
+Voyager now uses OpenAI chat models for all chat completions and OpenAI embeddings for Chroma retrieval. Put the settings in a local `.env` file:
 
 ```bash
-K2_API_KEY=YOUR_K2_API_KEY
-K2_BASE_URL=https://api.k2think.ai/v1
-K2_MODEL=MBZUAI-IFM/K2-Think-v2
 OPENAI_API_KEY=YOUR_OPENAI_API_KEY
+OPENAI_MODEL=gpt-4o-2024-08-06
 OPENAI_EMBEDDING_MODEL=text-embedding-3-small
 VOYAGER_MC_PORT=YOUR_MINECRAFT_LAN_PORT
 ```

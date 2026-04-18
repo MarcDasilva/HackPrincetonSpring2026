@@ -1,17 +1,13 @@
 import copy
-import json
 import os
 import time
 from typing import Dict
 
 import voyager.utils as U
-from .llms import load_env_file
-from .env import VoyagerEnv
 
-from .agents import ActionAgent
-from .agents import CriticAgent
-from .agents import CurriculumAgent
-from .agents import SkillManager
+from .agents import ActionAgent, CriticAgent, CurriculumAgent, SkillManager
+from .env import VoyagerEnv
+from .llms import load_env_file
 
 
 # TODO: remove event memory
@@ -29,23 +25,23 @@ class Voyager:
         env_request_timeout: int = 600,
         max_iterations: int = 160,
         reset_placed_if_failed: bool = False,
-        action_agent_model_name: str = "MBZUAI-IFM/K2-Think-v2",
+        action_agent_model_name: str = "gpt-4o-2024-08-06",
         action_agent_temperature: float = 0,
         action_agent_task_max_retries: int = 4,
         action_agent_show_chat_log: bool = True,
         action_agent_show_execution_error: bool = True,
-        curriculum_agent_model_name: str = "MBZUAI-IFM/K2-Think-v2",
+        curriculum_agent_model_name: str = "gpt-4o-2024-08-06",
         curriculum_agent_temperature: float = 0,
-        curriculum_agent_qa_model_name: str = "MBZUAI-IFM/K2-Think-v2",
+        curriculum_agent_qa_model_name: str = "gpt-4o-2024-08-06",
         curriculum_agent_qa_temperature: float = 0,
         curriculum_agent_warm_up: Dict[str, int] = None,
         curriculum_agent_core_inventory_items: str = r".*_log|.*_planks|stick|crafting_table|furnace"
         r"|cobblestone|dirt|coal|.*_pickaxe|.*_sword|.*_axe",
         curriculum_agent_mode: str = "auto",
-        critic_agent_model_name: str = "MBZUAI-IFM/K2-Think-v2",
+        critic_agent_model_name: str = "gpt-4o-2024-08-06",
         critic_agent_temperature: float = 0,
         critic_agent_mode: str = "auto",
-        skill_manager_model_name: str = "MBZUAI-IFM/K2-Think-v2",
+        skill_manager_model_name: str = "gpt-4o-2024-08-06",
         skill_manager_temperature: float = 0,
         skill_manager_retrieval_top_k: int = 5,
         openai_api_request_timeout: int = 240,
@@ -181,6 +177,19 @@ class Voyager:
         self.conversations = []
         self.last_events = None
 
+    @staticmethod
+    def _latest_observation_from_events(events):
+        if not events:
+            raise RuntimeError(
+                "Minecraft step returned no events. The Mineflayer process likely crashed before producing an observation."
+            )
+        event_type, event = events[-1]
+        if event_type != "observe":
+            raise RuntimeError(
+                f"Minecraft step ended with '{event_type}' instead of 'observe'."
+            )
+        return event
+
     def reset(self, task, context="", reset_env=True):
         self.action_agent_rollout_num_iter = 0
         self.task = task
@@ -219,27 +228,29 @@ class Voyager:
     def close(self):
         self.env.close()
 
+    def _recover_last_events_after_failure(self):
+        time.sleep(3)  # wait for mineflayer to exit
+        reset_options = {
+            "mode": "hard",
+            "wait_ticks": self.env_wait_ticks,
+        }
+        if self.last_events:
+            last_observation = self._latest_observation_from_events(self.last_events)
+            reset_options["inventory"] = last_observation["inventory"]
+            reset_options["equipment"] = last_observation["status"]["equipment"]
+            reset_options["position"] = last_observation["status"]["position"]
+        self.last_events = self.env.reset(options=reset_options)
+        return self.last_events
+
     def step(self):
         if self.action_agent_rollout_num_iter < 0:
             raise ValueError("Agent must be reset before stepping")
         ai_message = self.action_agent.llm(self.messages)
-        ai_message_for_log = self.action_agent.format_ai_message_for_log(
-            ai_message.content
-        )
-        print(
-            f"\033[34m****Action Agent ai message****\n{ai_message_for_log}\033[0m"
-        )
+        print(f"\033[34m****Action Agent ai message****\n{ai_message.content}\033[0m")
         self.conversations.append(
             (self.messages[0].content, self.messages[1].content, ai_message.content)
         )
         parsed_result = self.action_agent.process_ai_message(message=ai_message)
-        if isinstance(parsed_result, str):
-            fallback_result = self.action_agent.build_task_fallback(self.task)
-            if fallback_result:
-                print(
-                    f"\033[34mUsing deterministic fallback for task {self.task}\033[0m"
-                )
-                parsed_result = fallback_result
         success = False
         if isinstance(parsed_result, dict):
             code = parsed_result["program_code"] + "\n" + parsed_result["exec_code"]
@@ -247,8 +258,9 @@ class Voyager:
                 code,
                 programs=self.skill_manager.programs,
             )
+            latest_observation = self._latest_observation_from_events(events)
             self.recorder.record(events, self.task)
-            self.action_agent.update_chest_memory(events[-1][1]["nearbyChests"])
+            self.action_agent.update_chest_memory(latest_observation["nearbyChests"])
             success, critique = self.critic_agent.check_task_success(
                 events=events,
                 task=self.task,
@@ -271,8 +283,9 @@ class Voyager:
                     f"await givePlacedItemBack(bot, {U.json_dumps(blocks)}, {U.json_dumps(positions)})",
                     programs=self.skill_manager.programs,
                 )
-                events[-1][1]["inventory"] = new_events[-1][1]["inventory"]
-                events[-1][1]["voxels"] = new_events[-1][1]["voxels"]
+                reverted_observation = self._latest_observation_from_events(new_events)
+                latest_observation["inventory"] = reverted_observation["inventory"]
+                latest_observation["voxels"] = reverted_observation["voxels"]
             new_skills = self.skill_manager.retrieve_skills(
                 query=self.context
                 + "\n\n"
@@ -311,12 +324,11 @@ class Voyager:
             info["program_name"] = parsed_result["program_name"]
         else:
             print(
-                f"\033[32mAction Agent retry {self.action_agent_rollout_num_iter + 1}/"
-                f"{self.action_agent_task_max_retries} for task {self.task}\033[0m"
+                f"\033[32m****Action Agent human message****\n{self.messages[-1].content}\033[0m"
             )
         return self.messages, 0, done, info
 
-    def rollout(self, *, task, context, reset_env=False):
+    def rollout(self, *, task, context, reset_env=True):
         self.reset(task=task, context=context, reset_env=reset_env)
         while True:
             messages, reward, done, info = self.step()
@@ -324,7 +336,95 @@ class Voyager:
                 break
         return messages, reward, done, info
 
-    def learn(self, reset_env=False):
+    def interactive(self, reset_mode="hard", reset_env=False):
+        print("Interactive Voyager")
+        print("Type a task and press Enter.")
+        print("Optional context: task || context")
+        print("Commands: /help, /reset, /status, /quit")
+        print("Press Ctrl+C during a task to interrupt and enter a new one.")
+
+        self.env.reset(
+            options={
+                "mode": reset_mode,
+                "wait_ticks": self.env_wait_ticks,
+            }
+        )
+        self.resume = True
+        self.last_events = self.env.step("")
+
+        while True:
+            try:
+                raw = input("\nTask> ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print("\nExiting interactive mode.")
+                break
+
+            if not raw:
+                continue
+            if raw in {"/quit", "/exit"}:
+                break
+            if raw == "/help":
+                print("Enter a task like: Craft 4 spruce planks")
+                print("Or include context: Craft 4 spruce planks || Use the spruce log in inventory.")
+                print("Use /reset to reset the environment and /status to show the latest observation.")
+                continue
+            if raw == "/reset":
+                self.last_events = self.env.reset(
+                    options={
+                        "mode": reset_mode,
+                        "wait_ticks": self.env_wait_ticks,
+                    }
+                )
+                print("Environment reset.")
+                continue
+            if raw == "/status":
+                if self.last_events:
+                    print(self.action_agent.render_human_message(
+                        events=self.last_events,
+                        code="",
+                        task=self.task or "None",
+                        context=self.context or "",
+                        critique="",
+                    ).content)
+                else:
+                    print("No observation available yet.")
+                continue
+
+            task, context = raw, ""
+            if "||" in raw:
+                task, context = [part.strip() for part in raw.split("||", 1)]
+
+            print(
+                f"\033[35mStarting task {task} for at most {self.action_agent_task_max_retries} times\033[0m"
+            )
+            try:
+                _, _, _, info = self.rollout(
+                    task=task,
+                    context=context,
+                    reset_env=reset_env,
+                )
+            except KeyboardInterrupt:
+                print("\nTask interrupted. Recovering environment...")
+                self._recover_last_events_after_failure()
+                self.action_agent_rollout_num_iter = -1
+                continue
+            except Exception as e:
+                info = {
+                    "task": task,
+                    "success": False,
+                }
+                self._recover_last_events_after_failure()
+                self.action_agent_rollout_num_iter = -1
+                print("Your last round rollout terminated due to error:")
+                print(f"\033[41m{e}\033[0m")
+
+            if info["success"]:
+                self.skill_manager.add_new_skill(info)
+                print(f"\033[35mTask succeeded: {task}\033[0m")
+            else:
+                print(f"\033[35mTask failed: {task}\033[0m")
+
+    def learn(self, reset_env=True):
         if self.resume:
             # keep the inventory
             self.env.reset(
@@ -374,13 +474,14 @@ class Voyager:
                     "wait_ticks": self.env_wait_ticks,
                 }
                 if self.last_events:
-                    reset_options["inventory"] = self.last_events[-1][1]["inventory"]
-                    reset_options["equipment"] = self.last_events[-1][1]["status"][
+                    last_observation = self._latest_observation_from_events(
+                        self.last_events
+                    )
+                    reset_options["inventory"] = last_observation["inventory"]
+                    reset_options["equipment"] = last_observation["status"][
                         "equipment"
                     ]
-                    reset_options["position"] = self.last_events[-1][1]["status"][
-                        "position"
-                    ]
+                    reset_options["position"] = last_observation["status"]["position"]
                 self.last_events = self.env.reset(options=reset_options)
                 # use red color background to print the error
                 print("Your last round rollout terminated due to error:")
@@ -413,7 +514,7 @@ class Voyager:
             )
         return self.curriculum_agent.decompose_task(task, self.last_events)
 
-    def inference(self, task=None, sub_goals=[], reset_mode="hard", reset_env=False):
+    def inference(self, task=None, sub_goals=[], reset_mode="hard", reset_env=True):
         if not task and not sub_goals:
             raise ValueError("Either task or sub_goals must be provided")
         if not sub_goals:
