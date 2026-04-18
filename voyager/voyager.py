@@ -14,10 +14,15 @@ from .llms import load_env_file
 class Voyager:
     def __init__(
         self,
+        mc_host: str = "localhost",
         mc_port: int = None,
         azure_login: Dict[str, str] = None,
         server_port: int = 3000,
         bot_username: str = "bot",
+        mc_auth: str = None,
+        mc_password: str = None,
+        mc_version: str = None,
+        mc_profiles_dir: str = None,
         cerebras_api_key: str = None,
         openai_api_key: str = None,
         cerebras_base_url: str = None,
@@ -56,10 +61,15 @@ class Voyager:
         Curriculum agent is the automatic curriculum in paper.
         Critic agent is the self-verification in paper.
         Skill manager is the skill library in paper.
-        :param mc_port: minecraft in-game port
+        :param mc_host: minecraft server host
+        :param mc_port: minecraft server port
         :param azure_login: minecraft login config
         :param server_port: mineflayer port
         :param bot_username: minecraft username for the mineflayer bot
+        :param mc_auth: mineflayer auth mode, e.g. offline or microsoft
+        :param mc_password: optional password for authenticated servers
+        :param mc_version: optional minecraft protocol version
+        :param mc_profiles_dir: optional directory to cache mineflayer auth tokens
         :param cerebras_api_key: cerebras api key for all chat completions
         :param openai_api_key: openai api key for embeddings used by Chroma retrieval
         :param cerebras_base_url: cerebras-compatible OpenAI base url
@@ -110,10 +120,15 @@ class Voyager:
 
         # init env
         self.env = VoyagerEnv(
+            mc_host=mc_host,
             mc_port=mc_port,
             azure_login=azure_login,
             server_port=server_port,
             bot_username=bot_username,
+            mc_auth=mc_auth,
+            mc_password=mc_password,
+            mc_version=mc_version,
+            mc_profiles_dir=mc_profiles_dir,
             request_timeout=env_request_timeout,
         )
         self.env_wait_ticks = env_wait_ticks

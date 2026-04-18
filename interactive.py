@@ -8,10 +8,15 @@ def build_parser():
         description="Run Voyager in interactive terminal mode."
     )
     parser.add_argument(
+        "--mc-host",
+        default=None,
+        help="Minecraft server hostname. Defaults to VOYAGER_MC_HOST or localhost.",
+    )
+    parser.add_argument(
         "--mc-port",
         type=int,
         default=None,
-        help="Minecraft LAN port. Defaults to VOYAGER_MC_PORT if omitted.",
+        help="Minecraft server port. Defaults to VOYAGER_MC_PORT if omitted.",
     )
     parser.add_argument(
         "--server-port",
@@ -41,6 +46,7 @@ def build_parser():
 def main():
     args = build_parser().parse_args()
     voyager = Voyager(
+        mc_host=args.mc_host,
         mc_port=args.mc_port,
         server_port=args.server_port,
         bot_username=args.bot_username,

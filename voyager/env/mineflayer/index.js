@@ -26,13 +26,18 @@ app.post("/start", (req, res) => {
     if (bot) onDisconnect("Restarting bot");
     bot = null;
     console.log(req.body);
-    bot = mineflayer.createBot({
-        host: "localhost", // minecraft server ip
-        port: req.body.port, // minecraft server port
+    const botOptions = {
+        host: req.body.host || "localhost",
+        port: req.body.port,
         username: req.body.username || "bot",
         disableChatSigning: true,
         checkTimeoutInterval: 60 * 60 * 1000,
-    });
+    };
+    if (req.body.auth) botOptions.auth = req.body.auth;
+    if (req.body.password) botOptions.password = req.body.password;
+    if (req.body.version) botOptions.version = req.body.version;
+    if (req.body.profilesFolder) botOptions.profilesFolder = req.body.profilesFolder;
+    bot = mineflayer.createBot(botOptions);
     bot.once("error", onConnectionFailed);
 
     // Event subscriptions

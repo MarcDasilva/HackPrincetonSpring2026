@@ -15,8 +15,22 @@ from .minecraft_launcher import MinecraftInstance
 from .process_monitor import SubprocessMonitor
 
 MC_PORT_ENV_VAR = "VOYAGER_MC_PORT"
+MC_HOST_ENV_VAR = "VOYAGER_MC_HOST"
 SERVER_PORT_ENV_VAR = "VOYAGER_SERVER_PORT"
 BOT_USERNAME_ENV_VAR = "VOYAGER_BOT_USERNAME"
+MC_AUTH_ENV_VAR = "VOYAGER_MC_AUTH"
+MC_PASSWORD_ENV_VAR = "VOYAGER_MC_PASSWORD"
+MC_VERSION_ENV_VAR = "VOYAGER_MC_VERSION"
+MC_PROFILES_DIR_ENV_VAR = "VOYAGER_MC_PROFILES_DIR"
+
+
+def resolve_mc_host(mc_host=None):
+    if mc_host in (None, ""):
+        mc_host = os.getenv(MC_HOST_ENV_VAR, "localhost")
+    mc_host = str(mc_host).strip()
+    if not mc_host:
+        raise ValueError(f"{MC_HOST_ENV_VAR} must not be empty")
+    return mc_host
 
 
 def resolve_mc_port(mc_port=None):
@@ -52,31 +66,65 @@ def resolve_bot_username(bot_username=None):
     return bot_username
 
 
+def resolve_mc_auth(mc_auth=None):
+    if mc_auth in (None, ""):
+        mc_auth = os.getenv(MC_AUTH_ENV_VAR, "offline")
+    mc_auth = str(mc_auth).strip().lower()
+    if mc_auth not in {"offline", "microsoft", "mojang"}:
+        raise ValueError(
+            f"{MC_AUTH_ENV_VAR} must be one of offline, microsoft, mojang; got {mc_auth!r}"
+        )
+    return mc_auth
+
+
+def resolve_optional_env(value, env_var_name):
+    if value in (None, ""):
+        value = os.getenv(env_var_name)
+    if value in (None, ""):
+        return None
+    return str(value)
+
+
 class VoyagerEnv(gym.Env):
     def __init__(
         self,
+        mc_host="localhost",
         mc_port=None,
         azure_login=None,
         server_host="http://127.0.0.1",
         server_port=3000,
         bot_username="bot",
+        mc_auth=None,
+        mc_password=None,
+        mc_version=None,
+        mc_profiles_dir=None,
         request_timeout=600,
         log_path="./logs",
     ):
+        mc_host = resolve_mc_host(mc_host)
         mc_port = resolve_mc_port(mc_port)
         server_port = resolve_server_port(server_port)
         bot_username = resolve_bot_username(bot_username)
+        mc_auth = resolve_mc_auth(mc_auth)
+        mc_password = resolve_optional_env(mc_password, MC_PASSWORD_ENV_VAR)
+        mc_version = resolve_optional_env(mc_version, MC_VERSION_ENV_VAR)
+        mc_profiles_dir = resolve_optional_env(mc_profiles_dir, MC_PROFILES_DIR_ENV_VAR)
         if not mc_port and not azure_login:
             raise ValueError("Either mc_port or azure_login must be specified")
         if mc_port and azure_login:
             warnings.warn(
                 "Both mc_port and mc_login are specified, mc_port will be ignored"
             )
+        self.mc_host = mc_host
         self.mc_port = mc_port
         self.azure_login = azure_login
         self.server = f"{server_host}:{server_port}"
         self.server_port = server_port
         self.bot_username = bot_username
+        self.mc_auth = mc_auth
+        self.mc_password = mc_password
+        self.mc_version = mc_version
+        self.mc_profiles_dir = mc_profiles_dir
         self.request_timeout = request_timeout
         self.log_path = log_path
         self.mineflayer = self.get_mineflayer_process(server_port)
@@ -182,8 +230,10 @@ class VoyagerEnv(gym.Env):
             raise RuntimeError("inventory can only be set when options is hard")
 
         self.reset_options = {
+            "host": self.mc_host,
             "port": self.mc_port,
             "username": self.bot_username,
+            "auth": self.mc_auth,
             "reset": options.get("mode", "hard"),
             "inventory": options.get("inventory", {}),
             "equipment": options.get("equipment", []),
@@ -191,6 +241,12 @@ class VoyagerEnv(gym.Env):
             "waitTicks": options.get("wait_ticks", 5),
             "position": options.get("position", None),
         }
+        if self.mc_password:
+            self.reset_options["password"] = self.mc_password
+        if self.mc_version:
+            self.reset_options["version"] = self.mc_version
+        if self.mc_profiles_dir:
+            self.reset_options["profilesFolder"] = self.mc_profiles_dir
 
         self.unpause()
         self.mineflayer.stop()

@@ -36,6 +36,12 @@ const __dirname = path.dirname(__filename);
 
 const MY_NUMBER = "+19054629158";
 const SIMULATION_MODE = false; // ← Set to false when Voyager is fully setup (NOW READY!)
+const VOYAGER_MC_HOST = process.env.VOYAGER_MC_HOST || "localhost";
+const VOYAGER_MC_PORT = Number(process.env.VOYAGER_MC_PORT || 25565);
+const VOYAGER_MC_AUTH = process.env.VOYAGER_MC_AUTH || "offline";
+const VOYAGER_MC_PASSWORD = process.env.VOYAGER_MC_PASSWORD || "";
+const VOYAGER_MC_VERSION = process.env.VOYAGER_MC_VERSION || "";
+const VOYAGER_MC_PROFILES_DIR = process.env.VOYAGER_MC_PROFILES_DIR || "";
 const VOYAGER_PATH = process.env.VOYAGER_PATH || "/Users/williamzhang/Hackathon!!/voyager-repo"; // Path to Voyager repo
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "YOUR_API_KEY_HERE";
 const IMESSAGE_BOT_ID = process.env.IMESSAGE_BOT_ID || MY_NUMBER;
@@ -232,7 +238,12 @@ from voyager import Voyager
 
 print("[VOYAGER] Initializing...")
 voyager = Voyager(
-    mc_port=25565,
+    mc_host="${VOYAGER_MC_HOST}",
+    mc_port=${VOYAGER_MC_PORT},
+    mc_auth="${VOYAGER_MC_AUTH}",
+    mc_password=${JSON.stringify(VOYAGER_MC_PASSWORD || null)},
+    mc_version=${JSON.stringify(VOYAGER_MC_VERSION || null)},
+    mc_profiles_dir=${JSON.stringify(VOYAGER_MC_PROFILES_DIR || null)},
     openai_api_key="${this.openaiKey}",
     ckpt_dir="./ckpt",
     resume=False,
