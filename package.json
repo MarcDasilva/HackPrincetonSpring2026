@@ -12,7 +12,7 @@
     "multi-agent": "node multi-agent-example.js",
     "group-agents": "node group-chat-agents.js",
     "voyager": "node imessage-voyager-integration.js",
-    "photon": "node photon-cloud-integration.js",
+    "photon": "node index.js",
     "hackathon": "node setup-hackathon.js",
     "help": "node start.js"
   },
@@ -25,6 +25,7 @@
   "license": "MIT",
   "dependencies": {
     "@photon-ai/imessage-kit": "latest",
+    "dotenv": "^17.4.2",
     "mineflayer": "^4.37.0",
     "spectrum-ts": "latest"
   }

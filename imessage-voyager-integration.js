@@ -10,17 +10,7 @@
  * 4. Sends updates back to iMessage: "⛏️ Miner: Mining iron ore..."
  * 
  * Requirements:
- * - Voyager repo cloned from: https://github.com/MarcDasilva/HackPrincetonSprin      // Only handle text messages
-      if (message.content.type !== "text") continue;
-
-      const content = message.content.text?.trim() || "";
-      if (!content) continue;
-
-      // Skip messages the bot itself sent (loopback)
-      if (botSentTexts.has(content)) {
-        botSentTexts.delete(content);
-        continue;
-      } branch)
+ * - Voyager repo cloned from: https://github.com/MarcDasilva/HackPrincetonSpring2026 (voyager branch)
  * - Python 3.9+ with Voyager installed
  * - OpenAI API key (GPT-4)
  * - Minecraft running with Fabric mods
@@ -48,9 +38,9 @@ const MY_NUMBER = "+19054629158";
 const SIMULATION_MODE = false; // ← Set to false when Voyager is fully setup (NOW READY!)
 const VOYAGER_PATH = process.env.VOYAGER_PATH || "/Users/williamzhang/Hackathon!!/voyager-repo"; // Path to Voyager repo
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "YOUR_API_KEY_HERE";
-const USE_PHOTON_CLOUD = !!(process.env.PHOTON_PROJECT_ID && process.env.PHOTON_PROJECT_SECRET);
+const IMESSAGE_BOT_ID = process.env.IMESSAGE_BOT_ID || MY_NUMBER;
 
-// Group Chat Members - Add any phone numbers here (only used if not using Photon Cloud)
+// Group Chat Members - used when Photon cloud mode is enabled for group creation
 const GROUP_MEMBERS = [
   "+19054629158", // Your number
   // Add more numbers:
@@ -135,6 +125,20 @@ function getGroupAgents(spaceId) {
 
 // Legacy alias used elsewhere in the file
 const agents = AGENT_DEFINITIONS;
+
+function getPhotonCredentials() {
+  const projectId = process.env.PHOTON_PROJECT_ID || process.env.PROJECT_ID;
+  const projectSecret =
+    process.env.PHOTON_PROJECT_SECRET ||
+    process.env.PROJECT_SECRET ||
+    process.env.SECRET_KEY;
+
+  return {
+    projectId,
+    projectSecret,
+    enabled: Boolean(projectId && projectSecret),
+  };
+}
 
 // ============================================================================
 // VOYAGER SIMULATOR (for testing without Minecraft)
@@ -377,26 +381,13 @@ function needsCollaboration(message) {
 async function getOrCreateGroupChat(app, members) {
   try {
     console.log(`📱 Creating group chat with members: ${members.join(", ")}`);
-
-    // spectrum-ts: open a conversation with multiple participants = group chat
-    // The space ID for a group is the sorted members joined by ";+;"
-    const groupId = members.sort().join(";+;");
-
-    // Get or open the conversation space
-    const space = await app.getSpace(groupId);
-
-    if (space) {
-      console.log(`✅ Group chat ready: ${groupId}`);
-      return space;
-    }
-
-    // Fallback: return a minimal send-capable object
-    return {
-      id: groupId,
-      send: async (text) => {
-        await app.sendMessage({ to: groupId, text });
-      }
-    };
+    const im = imessage(app);
+    const users = await Promise.all(
+      [...new Set(members)].map((member) => im.user(member))
+    );
+    const space = await im.space(...users);
+    console.log(`✅ Group chat ready: ${space.id}`);
+    return space;
   } catch (error) {
     console.error("❌ Error creating group chat:", error.message);
     throw error;
@@ -428,12 +419,11 @@ async function main() {
   console.log("📱 Connecting to iMessage...");
 
   let app;
-  const photonProjectId = process.env.PHOTON_PROJECT_ID;
-  const photonProjectSecret = process.env.PHOTON_PROJECT_SECRET;
-  if (photonProjectId && photonProjectSecret) {
+  const photon = getPhotonCredentials();
+  if (photon.enabled) {
     app = await Spectrum({
-      projectId: photonProjectId,
-      projectSecret: photonProjectSecret,
+      projectId: photon.projectId,
+      projectSecret: photon.projectSecret,
       providers: [imessage.config({})],
     });
     console.log("☁️  Using Photon Spectrum cloud (DMs + Group Chats supported)");
@@ -442,22 +432,28 @@ async function main() {
       providers: [imessage.config({ local: true })],
     });
     console.log("💻 Using local iMessage mode (DMs only)");
+    console.log("   Set PHOTON_PROJECT_ID/PHOTON_PROJECT_SECRET to enable cloud group chats.");
   }
   console.log("");
 
   // Create or get group chat if GROUP_MEMBERS has multiple people
   let mainGroupChat = null;
   if (GROUP_MEMBERS.length > 1) {
-    console.log(`👥 Setting up group chat with ${GROUP_MEMBERS.length} members...`);
-    mainGroupChat = await getOrCreateGroupChat(app, GROUP_MEMBERS);
-    console.log(`✅ Group chat ready!\n`);
-    
-    // Send welcome message to group
-    await mainGroupChat.send("🤖 Minecraft AI is online! Send commands like 'mine iron ore' or 'build a house'");
+    if (!photon.enabled) {
+      console.log("⚠️  Skipping group chat setup: local iMessage mode cannot create groups.");
+      console.log("   Use Photon cloud credentials for group chat support.\n");
+    } else {
+      console.log(`👥 Setting up group chat with ${GROUP_MEMBERS.length} members...`);
+      mainGroupChat = await getOrCreateGroupChat(app, GROUP_MEMBERS);
+      console.log(`✅ Group chat ready!\n`);
+      
+      // Send welcome message to group
+      await mainGroupChat.send("🤖 Minecraft AI is online! Send commands like 'mine iron ore' or 'build a house'");
+    }
   }
 
-  console.log("💬 Monitoring group chats for commands\n");
-  console.log("📝 Example commands to try in a GROUP CHAT:");
+  console.log(photon.enabled ? "💬 Monitoring group chats for commands\n" : "💬 Monitoring chats for commands\n");
+  console.log(`📝 Example commands to try ${photon.enabled ? "in a GROUP CHAT" : "in your chat"}:`);
   console.log("   • 'mine iron ore'");
   console.log("   • 'build a shelter'");
   console.log("   • 'plan a survival strategy'");
@@ -465,9 +461,6 @@ async function main() {
   console.log("👁️  Listening for messages...\n");
 
   const seenMessages = new Set();
-
-  // Track messages the bot itself sends so we can ignore the loopback
-  const botSentTexts = new Set();
 
   // Track chats we've already welcomed so we only send the intro once
   const welcomedSpaces = new Set();
@@ -484,8 +477,8 @@ async function main() {
       const content = message.content.text?.trim() || "";
       if (!content) continue;
 
-      // Skip messages the bot itself sent (loopback — keep entry so repeated deliveries are also filtered)
-      if (botSentTexts.has(content)) continue;
+      // Skip our own looped-back sends to avoid responding to ourselves.
+      if (message.sender.id === IMESSAGE_BOT_ID || message.sender.id === "") continue;
 
       const sender = message.sender.name || message.sender.id;
 
@@ -493,7 +486,6 @@ async function main() {
 
       const reply = async (text) => {
         console.log(`📤 ${text}`);
-        botSentTexts.add(text); // mark as bot-sent before sending
         await space.send(text);
       };
 

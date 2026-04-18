@@ -2,7 +2,11 @@
 
 **Control Minecraft with iMessage using AI!** 🎮📱
 
-Send messages like "mine iron ore" or "build a house" in your iMessage group chat, and watch AI play Minecraft for you.
+Send messages like "mine iron ore" or "build a house" in your iMessage chat, and watch AI play Minecraft for you.
+
+Photon mode summary:
+- Local mode: no Photon credentials required, runs against the Messages database on your Mac, DM workflows only.
+- Photon cloud mode: set `PHOTON_PROJECT_ID` and `PHOTON_PROJECT_SECRET` to use managed iMessage infrastructure with group-chat creation support.
 
 ## Quick Start
 
@@ -14,11 +18,15 @@ pip install -e .
 # 2. Set your OpenAI API key
 export OPENAI_API_KEY="sk-your-key-here"
 
-# 3. Run the bot
+# 3. Optional: enable Photon cloud iMessage
+export PHOTON_PROJECT_ID="your-project-id"
+export PHOTON_PROJECT_SECRET="your-project-secret"
+
+# 4. Run the bot
 npm run voyager
 ```
 
-Now send commands in your iMessage **group chat**!
+Without Photon credentials, use a DM with the bot account on your Mac. With Photon credentials configured, group chats are supported.
 
 ---
 
