@@ -428,10 +428,21 @@ async function main() {
   console.log("📱 Connecting to iMessage...");
 
   let app;
-  app = await Spectrum({
-    providers: [imessage.config({ local: true })],
-  });
-  console.log("💻 Using local iMessage mode (DMs work)");
+  const photonProjectId = process.env.PHOTON_PROJECT_ID;
+  const photonProjectSecret = process.env.PHOTON_PROJECT_SECRET;
+  if (photonProjectId && photonProjectSecret) {
+    app = await Spectrum({
+      projectId: photonProjectId,
+      projectSecret: photonProjectSecret,
+      providers: [imessage.config({})],
+    });
+    console.log("☁️  Using Photon Spectrum cloud (DMs + Group Chats supported)");
+  } else {
+    app = await Spectrum({
+      providers: [imessage.config({ local: true })],
+    });
+    console.log("💻 Using local iMessage mode (DMs only)");
+  }
   console.log("");
 
   // Create or get group chat if GROUP_MEMBERS has multiple people
