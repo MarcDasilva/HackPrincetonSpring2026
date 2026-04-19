@@ -123,3 +123,12 @@ The database schema is deployed via Supabase's SQL Editor. All table definitions
 ## What Makes This Different
 
 Most Minecraft bots are single agents following scripted routines. This system runs multiple agents that share a live world model, coordinate through natural language, and adapt to user preferences without retraining or redeployment. The separation between Voyager's execution capabilities and our directive/memory/coordination layer means the agents get better at following user intent while Voyager independently gets better at executing tasks. Both improve over time, and they improve independently.
+
+## Citation
+
+@article{wang2023voyager,
+  title   = {Voyager: An Open-Ended Embodied Agent with Large Language Models},
+  author  = {Guanzhi Wang and Yuqi Xie and Yunfan Jiang and Ajay Mandlekar and Chaowei Xiao and Yuke Zhu and Linxi Fan and Anima Anandkumar},
+  year    = {2023},
+  journal = {arXiv preprint arXiv: Arxiv-2305.16291}
+}
