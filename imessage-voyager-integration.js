@@ -1,20 +1,3 @@
-/**
- * iMessage → Voyager Minecraft Integration
- *
- * Bridges iMessage group chat with Python Voyager bot for REAL Minecraft control
- *
- * Updated targeting behavior:
- * - "agent 1 chop wood"
- * - "agents 1,2 chop wood"
- * - "all agents chop wood"
- *
- * Core repo behavior preserved:
- * - Spectrum/iMessage integration
- * - Group-chat-only processing
- * - Simulation mode vs real Voyager mode
- * - Python subprocess execution for real mode
- */
-
 import { Spectrum } from "spectrum-ts";
 import { imessage } from "spectrum-ts/providers/imessage";
 import { spawn } from "child_process";
@@ -26,78 +9,146 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // ============================================================================
-// CONFIGURATION
+// CONFIG
 // ============================================================================
 
-const MY_NUMBER = "+19054629158";
-const SIMULATION_MODE = false; // Set to false when Voyager is fully setup
-const VOYAGER_PATH =
-  process.env.VOYAGER_PATH || "/Users/williamzhang/Hackathon!!/voyager-repo";
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "YOUR_API_KEY_HERE";
+const MY_NUMBER = process.env.MY_NUMBER || "+19054629158";
+const SIMULATION_MODE = String(process.env.SIMULATION_MODE || "false") === "true";
 
-const AGENT_IDS = ["1", "2", "3"];
+const VOYAGER_PATH =
+  process.env.VOYAGER_PATH || "/path/to/voyager-repo";
+
+const OPENAI_API_KEY =
+  process.env.OPENAI_API_KEY || "";
+
+const AGENTS = ["1", "2", "3"];
+
+const PHOTON_SERVER_URL = process.env.PHOTON_SERVER_URL || "";
+const PHOTON_API_KEY = process.env.PHOTON_API_KEY || "";
+const PHOTON_PROXY_URL =
+  process.env.PHOTON_PROXY_URL || "https://imessage-swagger.photon.codes";
+
+const DEFAULT_GROUP_NAME =
+  process.env.DEFAULT_GROUP_NAME || "Minecraft Agents";
 
 // ============================================================================
 // HELPERS
 // ============================================================================
 
-function getAgentLabel(agentId) {
-  return `Agent ${agentId}`;
-}
-
 function isGroupChat(space) {
   return space.id.includes(";+;") || space.id.includes("group");
+}
+
+function getAgentLabel(id) {
+  return `Agent ${id}`;
 }
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function escapePythonTripleQuotedString(input) {
+function buildPhotonBearerToken() {
+  if (!PHOTON_SERVER_URL || !PHOTON_API_KEY) {
+    return null;
+  }
+  return Buffer.from(`${PHOTON_SERVER_URL}|${PHOTON_API_KEY}`).toString("base64");
+}
+
+function sanitizePythonTripleQuotedString(input) {
   return String(input)
     .replace(/\\/g, "\\\\")
     .replace(/"""/g, '\\"\\"\\"');
 }
 
-function parseTargetedCommand(message) {
-  const text = message.trim();
+async function safeJson(response) {
+  const text = await response.text();
+  if (!text) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return { raw: text };
+  }
+}
 
-  // all agents chop wood
-  // everyone chop wood
-  const allMatch = text.match(/^(all\s+agents|everyone)\s+(.+)$/i);
-  if (allMatch) {
+// ============================================================================
+// COMMAND PARSER
+// ============================================================================
+
+function parseCommand(text) {
+  const trimmed = text.trim();
+
+  // /creategroup +15551234567,+15557654321
+  // /creategroup Team Alpha | +15551234567,+15557654321
+  if (trimmed.startsWith("/creategroup")) {
+    const rest = trimmed.replace("/creategroup", "").trim();
+
+    let groupName = DEFAULT_GROUP_NAME;
+    let rawParticipants = rest;
+
+    if (rest.includes("|")) {
+      const [namePart, participantPart] = rest.split("|");
+      groupName = (namePart || "").trim() || DEFAULT_GROUP_NAME;
+      rawParticipants = (participantPart || "").trim();
+    }
+
+    const participants = rawParticipants
+      .split(",")
+      .map((p) => p.trim())
+      .filter(Boolean);
+
     return {
-      targets: [...AGENT_IDS],
-      command: allMatch[2].trim(),
+      type: "create_group",
+      groupName,
+      participants,
     };
   }
 
+  // /sendgroup group:abc123 hello everyone
+  if (trimmed.startsWith("/sendgroup")) {
+    const rest = trimmed.replace("/sendgroup", "").trim();
+    const firstSpace = rest.indexOf(" ");
+    if (firstSpace > 0) {
+      const groupId = rest.slice(0, firstSpace).trim();
+      const message = rest.slice(firstSpace + 1).trim();
+      if (groupId && message) {
+        return {
+          type: "send_group",
+          groupId,
+          message,
+        };
+      }
+    }
+  }
+
+  // all agents chop wood
+  let match = trimmed.match(/^(all agents|everyone)\s+(.+)$/i);
+  if (match) {
+    return { type: "task", targets: [...AGENTS], command: match[2].trim() };
+  }
+
   // agent 1 chop wood
-  const singleMatch = text.match(/^agent\s+([123])\s+(.+)$/i);
-  if (singleMatch) {
-    return {
-      targets: [singleMatch[1]],
-      command: singleMatch[2].trim(),
-    };
+  match = trimmed.match(/^agent\s+([123])\s+(.+)$/i);
+  if (match) {
+    return { type: "task", targets: [match[1]], command: match[2].trim() };
   }
 
   // agents 1,2 chop wood
   // agents 1 2 3 chop wood
-  const multiMatch = text.match(/^agents?\s+([123,\s]+)\s+(.+)$/i);
-  if (multiMatch) {
-    const nums = multiMatch[1]
-      .split(/[,\s]+/)
-      .map((s) => s.trim())
-      .filter(Boolean)
-      .filter((n) => AGENT_IDS.includes(n));
+  match = trimmed.match(/^agents?\s+([123,\s]+)\s+(.+)$/i);
+  if (match) {
+    const ids = [
+      ...new Set(
+        match[1]
+          .replace(/,/g, " ")
+          .split(" ")
+          .map((s) => s.trim())
+          .filter(Boolean)
+          .filter((id) => AGENTS.includes(id))
+      ),
+    ];
 
-    const uniqueNums = [...new Set(nums)];
-
-    if (uniqueNums.length > 0) {
-      return {
-        targets: uniqueNums,
-        command: multiMatch[2].trim(),
-      };
+    if (ids.length > 0) {
+      return { type: "task", targets: ids, command: match[2].trim() };
     }
   }
 
@@ -105,423 +156,388 @@ function parseTargetedCommand(message) {
 }
 
 // ============================================================================
-// VOYAGER SIMULATOR (for testing without Minecraft)
+// PHOTON ADVANCED GROUP CREATION / SEND
 // ============================================================================
 
-class VoyagerSimulator {
-  constructor() {
-    this.taskCount = 0;
-    this.inventory = {
-      wood: 0,
-      cobblestone: 0,
-      iron_ore: 0,
-      coal: 0,
-      diamond: 0,
+async function createGroupChat(participants, name = DEFAULT_GROUP_NAME) {
+  const bearer = buildPhotonBearerToken();
+
+  if (!bearer) {
+    return {
+      success: false,
+      message:
+        "Missing PHOTON_SERVER_URL or PHOTON_API_KEY. Group creation is not configured.",
     };
   }
 
-  async executeTask(agentId, command) {
-    this.taskCount++;
+  if (!participants || participants.length < 2) {
+    return {
+      success: false,
+      message:
+        "Use at least 2 participants. Example: /creategroup Team Alpha | +15551234567,+15557654321",
+    };
+  }
 
-    console.log(`\n[Voyager Sim] Task #${this.taskCount}`);
-    console.log(`Agent: ${getAgentLabel(agentId)}`);
-    console.log(`Command: "${command}"`);
+  const response = await fetch(`${PHOTON_PROXY_URL}/groups`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${bearer}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      participants,
+      name,
+    }),
+  });
 
-    await sleep(500 + Math.random() * 1000);
+  const data = await safeJson(response);
+
+  if (!response.ok) {
+    return {
+      success: false,
+      message: `Failed to create group (${response.status}): ${
+        data?.error || data?.message || JSON.stringify(data)
+      }`,
+      data,
+    };
+  }
+
+  const groupId =
+    data?.id || data?.groupId || data?.chatId || data?.guid || null;
+
+  if (!groupId) {
+    return {
+      success: false,
+      message: "Group created, but no group id was returned.",
+      data,
+    };
+  }
+
+  return {
+    success: true,
+    groupId,
+    data,
+    message: `✅ Created group "${name}" → ${groupId}`,
+  };
+}
+
+async function sendMessageToGroup(groupId, text) {
+  const bearer = buildPhotonBearerToken();
+
+  if (!bearer) {
+    return {
+      success: false,
+      message:
+        "Missing PHOTON_SERVER_URL or PHOTON_API_KEY. Group sending is not configured.",
+    };
+  }
+
+  const response = await fetch(`${PHOTON_PROXY_URL}/send`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${bearer}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      to: groupId,
+      text,
+    }),
+  });
+
+  const data = await safeJson(response);
+
+  if (!response.ok) {
+    return {
+      success: false,
+      message: `Failed to send to group (${response.status}): ${
+        data?.error || data?.message || JSON.stringify(data)
+      }`,
+      data,
+    };
+  }
+
+  return {
+    success: true,
+    message: `✅ Sent kickoff message to ${groupId}`,
+    data,
+  };
+}
+
+// ============================================================================
+// SIMULATOR
+// ============================================================================
+
+class Simulator {
+  async run(agentId, command) {
+    await sleep(600 + Math.random() * 1000);
 
     const responses = [
-      "Gathered 32 oak wood logs",
-      "Collected 64 cobblestone blocks",
-      "Mined 16 iron ore from depth Y=12",
-      "Found diamond at (45, 11, -89)!",
-      "Crafted basic tools successfully",
-      "Built a small shelter near spawn",
+      "chopped wood",
+      "built shelter",
+      "mined iron",
+      "found coal",
+      "crafted tools",
+      "gathered stone",
     ];
 
-    const response = responses[Math.floor(Math.random() * responses.length)];
-    this.updateInventory(response);
-
-    const success = Math.random() > 0.1;
-
-    if (success) {
-      console.log(`✅ Success: ${response}`);
-      return { success: true, result: response };
-    } else {
-      console.log(`❌ Failed: Task error`);
-      return { success: false, error: "Ran out of resources or got stuck" };
-    }
-  }
-
-  updateInventory(response) {
-    const normalized = response.toLowerCase();
-
-    if (normalized.includes("wood")) this.inventory.wood += 32;
-    if (normalized.includes("cobblestone")) this.inventory.cobblestone += 64;
-    if (normalized.includes("iron ore")) this.inventory.iron_ore += 16;
-    if (normalized.includes("coal")) this.inventory.coal += 16;
-    if (normalized.includes("diamond")) this.inventory.diamond += 1;
-  }
-
-  getInventoryStatus() {
-    return Object.entries(this.inventory)
-      .filter(([, count]) => count > 0)
-      .map(([item, count]) => `${count}x ${item}`)
-      .join(", ");
+    return {
+      success: true,
+      result: responses[Math.floor(Math.random() * responses.length)],
+    };
   }
 }
 
 // ============================================================================
-// REAL VOYAGER EXECUTOR (connects to Python Voyager bot)
+// REAL VOYAGER EXECUTOR
 // ============================================================================
 
 class VoyagerExecutor {
-  constructor(voyagerPath, openaiKey, agentId = "1") {
-    this.voyagerPath = voyagerPath;
-    this.openaiKey = openaiKey;
+  constructor(agentId) {
     this.agentId = agentId;
-    this.currentProcess = null;
-    this.taskQueue = [];
     this.isBusy = false;
+    this.queue = [];
   }
 
-  async executeTask(command, statusCallback) {
-    console.log(`\n[Real Voyager] Executing task...`);
-    console.log(`Agent: ${getAgentLabel(this.agentId)}`);
-    console.log(`Task: "${command}"`);
+  async run(command, send) {
+    if (this.isBusy) {
+      this.queue.push(command);
+      await send(`🤖 ${getAgentLabel(this.agentId)} queued`);
+      return;
+    }
 
-    const safeTask = escapePythonTripleQuotedString(command);
-    const safeVoyagerPath = escapePythonTripleQuotedString(this.voyagerPath);
-    const safeApiKey = escapePythonTripleQuotedString(this.openaiKey);
+    this.isBusy = true;
+    await send(`🤖 ${getAgentLabel(this.agentId)}: starting "${command}"`);
 
-    const pythonScript = `
-import sys
-import os
+    try {
+      if (SIMULATION_MODE) {
+        const sim = new Simulator();
+        const result = await sim.run(this.agentId, command);
+        await send(`🤖 ${getAgentLabel(this.agentId)}: ${result.result}`);
+        return;
+      }
 
+      const safeTask = sanitizePythonTripleQuotedString(command);
+      const safeVoyagerPath = sanitizePythonTripleQuotedString(VOYAGER_PATH);
+      const safeApiKey = sanitizePythonTripleQuotedString(OPENAI_API_KEY);
+
+      const script = `
+import os, sys
 sys.path.insert(0, "${safeVoyagerPath}")
 
 from voyager import Voyager
 
-azure_login = {
-    "client_id": os.getenv("AZURE_CLIENT_ID", "YOUR_CLIENT_ID"),
-    "redirect_url": "https://127.0.0.1/auth-response",
-    "version": "fabric-loader-0.14.18-1.19",
-}
-
 print("[VOYAGER] Agent ${this.agentId}: Initializing...")
 
 voyager = Voyager(
-    azure_login=azure_login,
     openai_api_key="${safeApiKey}",
-    ckpt_dir="./ckpt/agent_${this.agentId}",
-    resume=False,
+    ckpt_dir="./ckpt/agent_${this.agentId}"
 )
 
 task = """${safeTask}"""
 
-print(f"[VOYAGER] Agent ${this.agentId}: Task: {task}")
+print("[VOYAGER] Agent ${this.agentId}: Task: " + task)
+print("[VOYAGER] Agent ${this.agentId}: Decomposing task into sub-goals...")
 
-try:
-    print("[VOYAGER] Agent ${this.agentId}: Decomposing task into sub-goals...")
-    sub_goals = voyager.decompose_task(task=task)
-    print(f"[VOYAGER] Agent ${this.agentId}: Sub-goals: {sub_goals}")
-    print("[VOYAGER] Agent ${this.agentId}: Executing in Minecraft...")
-    voyager.inference(sub_goals=sub_goals)
-    print("[VOYAGER] Agent ${this.agentId}: ✅ Task completed successfully!")
-except Exception as e:
-    print(f"[VOYAGER] Agent ${this.agentId}: ❌ Error: {e}")
-    sys.exit(1)
+sub_goals = voyager.decompose_task(task=task)
+print("[VOYAGER] Agent ${this.agentId}: Sub-goals: " + str(sub_goals))
+print("[VOYAGER] Agent ${this.agentId}: Executing in Minecraft...")
+
+voyager.inference(sub_goals=sub_goals)
+
+print("[VOYAGER] Agent ${this.agentId}: ✅ done")
 `;
 
-    const tempFile = path.join(
-      __dirname,
-      `temp_voyager_agent_${this.agentId}_${Date.now()}.py`
-    );
-    fs.writeFileSync(tempFile, pythonScript);
+      const file = path.join(
+        __dirname,
+        `temp_agent_${this.agentId}_${Date.now()}.py`
+      );
+      fs.writeFileSync(file, script);
 
-    return new Promise((resolve, reject) => {
-      this.isBusy = true;
+      await new Promise((resolve, reject) => {
+        const proc = spawn("python3", [file], {
+          cwd: VOYAGER_PATH,
+          env: {
+            ...process.env,
+            PYTHONUNBUFFERED: "1",
+            AGENT_ID: this.agentId,
+          },
+        });
 
-      this.currentProcess = spawn("python3", [tempFile], {
-        cwd: this.voyagerPath,
-        env: {
-          ...process.env,
-          PYTHONUNBUFFERED: "1",
-          AGENT_ID: this.agentId,
-        },
-      });
-
-      let output = "";
-
-      this.currentProcess.stdout.on("data", async (data) => {
-        const text = data.toString();
-        output += text;
-
-        console.log(`[Voyager Agent ${this.agentId}]:`, text.trim());
-
-        if (text.includes("[VOYAGER]")) {
+        proc.stdout.on("data", async (data) => {
+          const text = data.toString();
           const lines = text
             .split("\n")
             .map((line) => line.trim())
             .filter(Boolean);
 
           for (const line of lines) {
-            if (line.includes("[VOYAGER]") && statusCallback) {
+            if (line.includes("[VOYAGER]")) {
               const status = line.replace("[VOYAGER]", "").trim();
-              await statusCallback(`🤖 ${status}`);
+              await send(`🤖 ${status}`);
             }
           }
-        }
+        });
+
+        proc.stderr.on("data", async (data) => {
+          const text = data.toString().trim();
+          if (text) {
+            await send(`🤖 ${getAgentLabel(this.agentId)} error: ${text}`);
+          }
+        });
+
+        proc.on("close", (code) => {
+          try {
+            fs.unlinkSync(file);
+          } catch {}
+
+          if (code === 0) {
+            resolve();
+          } else {
+            reject(new Error(`Voyager exited with code ${code}`));
+          }
+        });
       });
+    } catch (error) {
+      await send(`🤖 ${getAgentLabel(this.agentId)}: ❌ ${error.message}`);
+    } finally {
+      this.isBusy = false;
 
-      this.currentProcess.stderr.on("data", (data) => {
-        const text = data.toString();
-        output += text;
-        console.error(`[Voyager Agent ${this.agentId} Error]:`, text.trim());
-      });
-
-      this.currentProcess.on("close", async (code) => {
-        try {
-          fs.unlinkSync(tempFile);
-        } catch (e) {
-          // ignore cleanup errors
-        }
-
-        this.isBusy = false;
-        this.currentProcess = null;
-
-        if (code === 0) {
-          console.log(`✅ Voyager task completed successfully for Agent ${this.agentId}`);
-          resolve({ success: true, result: output });
-        } else {
-          console.log(`❌ Voyager task failed for Agent ${this.agentId} (exit code: ${code})`);
-          reject(new Error(`Voyager failed with exit code ${code}`));
-        }
-
-        if (this.taskQueue.length > 0) {
-          const next = this.taskQueue.shift();
-          this.executeTask(next.command, next.statusCallback).catch(console.error);
-        }
-      });
-    });
-  }
-
-  stop() {
-    if (this.currentProcess) {
-      this.currentProcess.kill();
+      if (this.queue.length > 0) {
+        const next = this.queue.shift();
+        this.run(next, send).catch(console.error);
+      }
     }
   }
 }
 
 // ============================================================================
-// MULTI-AGENT MANAGER
+// MULTI AGENT MANAGER
 // ============================================================================
 
-class MultiVoyagerExecutor {
-  constructor(voyagerPath, openaiKey) {
-    this.voyagerPath = voyagerPath;
-    this.openaiKey = openaiKey;
-    this.executors = new Map(); // lazy creation
+class Manager {
+  constructor() {
+    this.executors = {};
   }
 
-  getExecutor(agentId) {
-    if (!this.executors.has(agentId)) {
-      this.executors.set(
-        agentId,
-        new VoyagerExecutor(this.voyagerPath, this.openaiKey, agentId)
-      );
+  get(id) {
+    if (!this.executors[id]) {
+      this.executors[id] = new VoyagerExecutor(id);
     }
-    return this.executors.get(agentId);
+    return this.executors[id];
   }
 
-  async executeForAgent(agentId, command, statusCallback) {
-    const executor = this.getExecutor(agentId);
+  async run(targets, command, send) {
+    await send(
+      `Dispatching "${command}" to ${targets
+        .map((t) => `Agent ${t}`)
+        .join(", ")}`
+    );
 
-    if (executor.isBusy) {
-      executor.taskQueue.push({ command, statusCallback });
-      return { queued: true, position: executor.taskQueue.length };
-    }
-
-    executor.executeTask(command, statusCallback).catch(console.error);
-    return { queued: false, position: 0 };
-  }
-
-  stop() {
-    for (const executor of this.executors.values()) {
-      executor.stop();
-    }
+    await Promise.all(targets.map((id) => this.get(id).run(command, send)));
   }
 }
 
 // ============================================================================
-// MAIN BOT
+// MAIN
 // ============================================================================
-
-let executor = null;
 
 async function main() {
-  console.log("╔══════════════════════════════════════════════════════════════╗");
-  console.log("║ iMessage → Voyager Minecraft Integration                    ║");
-  console.log(`║ Mode: ${SIMULATION_MODE ? "SIMULATION" : "REAL MINECRAFT"}                                     ║`);
-  console.log("╚══════════════════════════════════════════════════════════════╝\n");
+  const manager = new Manager();
 
-  let voyager;
-  if (SIMULATION_MODE) {
-    console.log("Using SIMULATION mode (no Minecraft needed)");
-    voyager = new VoyagerSimulator();
-  } else {
-    console.log("Using REAL Voyager mode");
-    console.log(`Voyager path: ${VOYAGER_PATH}`);
-    voyager = new MultiVoyagerExecutor(VOYAGER_PATH, OPENAI_API_KEY);
-    executor = voyager;
-  }
-
-  console.log("Connecting to iMessage...");
   const app = await Spectrum({
     providers: [imessage.config({ local: true })],
   });
 
-  console.log("✅ Connected!\n");
-  console.log("Monitoring group chats for commands\n");
-  console.log("Example commands to try in a GROUP CHAT:");
-  console.log("• 'agent 1 mine iron ore'");
-  console.log("• 'agents 1,2 build a shelter'");
-  console.log("• 'all agents chop wood'\n");
-  console.log("Listening for messages...\n");
+  console.log("Connected to iMessage via Spectrum");
+  console.log("Listening for group messages...");
 
-  const seenMessages = new Set();
+  const seen = new Set();
 
-  for await (const [space, message] of app.messages) {
+  for await (const [space, msg] of app.messages) {
     try {
-      if (seenMessages.has(message.id)) continue;
-      seenMessages.add(message.id);
+      if (seen.has(msg.id)) continue;
+      seen.add(msg.id);
 
-      if (message.sender.id === MY_NUMBER || message.sender.id === "") {
-        continue;
-      }
+      if (msg.sender.id === MY_NUMBER || msg.sender.id === "") continue;
+      if (!isGroupChat(space)) continue;
+      if (msg.content.type !== "text") continue;
 
-      if (!isGroupChat(space)) {
-        continue;
-      }
+      const text = (msg.content.text || "").trim();
+      if (!text) continue;
 
-      if (message.content.type !== "text") continue;
+      console.log("Message:", text);
 
-      const content = (message.content.text || "").trim();
-      const sender = message.sender.name || message.sender.id;
-
-      console.log(`\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
-      console.log(`[${sender}]: ${content}`);
-
-      const sendToGroup = async (text) => {
-        console.log(`${text}`);
-        await space.send(text);
+      const send = async (messageText) => {
+        console.log("SEND:", messageText);
+        await space.send(messageText);
       };
 
-      if (
-        content.toLowerCase().includes("inventory") ||
-        content.toLowerCase().includes("status")
-      ) {
-        if (SIMULATION_MODE) {
-          const inventory = voyager.getInventoryStatus();
-          const statusMsg = inventory
-            ? `Current Inventory: ${inventory}`
-            : `Inventory is empty`;
-          await sendToGroup(statusMsg);
-        } else {
-          await sendToGroup("Status check not available in real mode yet");
-        }
+      const parsed = parseCommand(text);
+
+      if (!parsed) {
+        await send(
+          [
+            "Use one of these:",
+            "agent 1 chop wood",
+            "agents 1,2 chop wood",
+            "all agents chop wood",
+            "/creategroup Team Alpha | +15551234567,+15557654321",
+            "/sendgroup group:abc123 hello team",
+          ].join("\n")
+        );
         continue;
       }
 
-      const parsed = parseTargetedCommand(content);
+      if (parsed.type === "create_group") {
+        const result = await createGroupChat(
+          parsed.participants,
+          parsed.groupName
+        );
 
-      if (parsed) {
-        const { targets, command } = parsed;
+        await send(result.message);
 
-        if (SIMULATION_MODE) {
-          for (const agentId of targets) {
-            const result = await voyager.executeTask(agentId, command);
-            const response = result.success
-              ? `🤖 ${getAgentLabel(agentId)}: ${result.result}`
-              : `🤖 ${getAgentLabel(agentId)}: ❌ ${result.error}`;
-            await sendToGroup(response);
-          }
-        } else {
-          await sendToGroup(
-            `Dispatching "${command}" to ${targets
-              .map((id) => getAgentLabel(id))
-              .join(", ")}`
+        if (result.success && result.groupId) {
+          const kickoff = await sendMessageToGroup(
+            result.groupId,
+            `🤖 ${parsed.groupName} created and ready. Commands will run here once you message this group.`
           );
 
-          const results = await Promise.all(
-            targets.map((agentId) =>
-              voyager
-                .executeForAgent(agentId, command, async (status) => {
-                  await sendToGroup(status);
-                })
-                .then((result) => ({ agentId, result }))
-            )
-          );
-
-          for (const { agentId, result } of results) {
-            if (result.queued) {
-              await sendToGroup(
-                `🤖 ${getAgentLabel(agentId)}: Task queued (position: ${result.position})`
-              );
-            }
+          if (!kickoff.success) {
+            await send(kickoff.message);
+          } else {
+            await send(
+              `✅ Kickoff sent to ${result.groupId}. Open that new group and start commanding agents there.`
+            );
           }
         }
-      } else {
-        const helpMsg =
-          "Target agents explicitly:\n" +
-          "• agent 1 chop wood\n" +
-          "• agents 1,2 chop wood\n" +
-          "• all agents chop wood";
-        await sendToGroup(helpMsg);
+
+        continue;
+      }
+
+      if (parsed.type === "send_group") {
+        const result = await sendMessageToGroup(parsed.groupId, parsed.message);
+        await send(result.message);
+        continue;
+      }
+
+      if (parsed.type === "task") {
+        await manager.run(parsed.targets, parsed.command, send);
       }
     } catch (error) {
-      console.error("❌ Error:", error.message);
+      console.error("Message handling error:", error);
+      try {
+        await space.send(`❌ Error: ${error.message}`);
+      } catch {}
     }
   }
 }
 
-// ============================================================================
-// START
-// ============================================================================
-
 process.on("SIGINT", () => {
-  console.log("\n\nShutting down gracefully...");
-  if (executor && !SIMULATION_MODE) {
-    executor.stop();
-  }
+  console.log("\nShutting down...");
   process.exit(0);
 });
 
 main().catch((error) => {
-  console.error("❌ Fatal error:", error);
+  console.error("Fatal error:", error);
   process.exit(1);
 });
-
-console.log("\nSETUP INSTRUCTIONS:");
-console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-console.log("Current Mode:", SIMULATION_MODE ? "SIMULATION ✅" : "REAL MINECRAFT");
-
-if (!SIMULATION_MODE) {
-  console.log("\nReal Mode Requirements:");
-  console.log(
-    "1. Clone Voyager repo: git clone https://github.com/MarcDasilva/HackPrincetonSpring2026 -b voyager"
-  );
-  console.log("2. Install Python 3.9+ and Voyager: pip install -e .");
-  console.log("3. Set environment variables:");
-  console.log("   export VOYAGER_PATH=/path/to/HackPrincetonSpring2026");
-  console.log("   export OPENAI_API_KEY=your_key_here");
-  console.log("4. Start Minecraft (Fabric 1.19) and create world");
-  console.log("5. Open world to LAN with cheats ON");
-}
-
-console.log("\nUsage:");
-console.log("• Send messages in your iMessage GROUP CHAT");
-console.log("• Examples:");
-console.log("  - 'agent 1 mine iron ore'");
-console.log("  - 'agents 1,2 build a house'");
-console.log("  - 'all agents chop wood'");
-console.log("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
