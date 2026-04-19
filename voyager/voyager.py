@@ -533,7 +533,21 @@ class Voyager:
                     "wait_ticks": self.env_wait_ticks,
                 }
             )
-        return self.curriculum_agent.decompose_task(task, self.last_events)
+        try:
+            latest_observation = self._latest_observation_from_events(self.last_events)
+            nearby_chests = latest_observation.get("nearbyChests", {})
+            if isinstance(nearby_chests, dict):
+                self.action_agent.update_chest_memory(nearby_chests)
+        except Exception:
+            # Best effort only; decomposition can still proceed without chest memory.
+            pass
+
+        chest_observation = self.action_agent.render_chest_observation()
+        return self.curriculum_agent.decompose_task(
+            task,
+            self.last_events,
+            chest_observation=chest_observation,
+        )
 
     def inference(self, task=None, sub_goals=[], reset_mode="hard", reset_env=True):
         if not task and not sub_goals:

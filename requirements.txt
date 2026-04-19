@@ -1,8 +1,10 @@
 tqdm
 langchain
+langchain-community
 javascript
 setuptools
 openai
+dedalus-labs
 chardet
 chromadb==0.3.29
 tiktoken

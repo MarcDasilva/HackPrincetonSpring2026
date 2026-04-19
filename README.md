@@ -30,7 +30,7 @@ Without Photon credentials, use a DM with the bot account on your Mac. With Phot
 
 ## Photon Orchestrator
 
-For the approval-based Photon handoff flow, run:
+For the approval-based local orchestration flow, run:
 
 ```bash
 npm run photon
@@ -40,89 +40,54 @@ Photon will now:
 - propose the agent plan first
 - wait for you to reply `YES` or `/approve`
 - keep revising the plan until you confirm it
-- launch the OpenClaw handoff only after approval
+- launch local Voyager bots only after approval
+- run independent bot assignments in parallel
+- send shared run memory events to Supabase (when configured)
+- query Supabase memory/vector context and inject resolved locations into bot tasks
 - write proposal/run tracking files to `PHOTON_TRACKING_DIR` (default: `./photon-progress`)
 
 Useful chat commands:
 - `/status`
 - `/status RUN_ID`
 - `/approve`
+- `/override <miner|builder|forager|assignment_id> [task]`
 - `/cancel`
+- `/end`
+- `/memory log <text>`
+- `/memory find <query>`
+- `/memory recent`
 - `/help`
 
-## Dedalus Machine Deployment
-
-Dedalus DCS machines are full Linux VMs with persistent `/home/machine` storage and an ephemeral root filesystem. That means your repo, checkpoints, logs, and tracking files should live under `/home/machine`, and you should rerun bootstrap work after a machine wakes up.
-
-From your laptop, install the official Dedalus CLI and export the required auth variables from the CLI docs:
+Recommended local env for this flow:
 
 ```bash
-export DEDALUS_API_KEY=...
-```
-
-For a full Photon + OpenClaw deployment, your local `.env` should also include:
-
-```bash
+OPENAI_API_KEY=...
+OPENAI_EMBEDDING_MODEL=text-embedding-3-small
+VOYAGER_PATH=/absolute/path/to/voyager
+VOYAGER_MC_PORT=25565
+VOYAGER_SERVER_PORT=3000
+VOYAGER_BOT_PREFIX=vgr
+PYTHON_BIN=python3
 SUPABASE_URL=...
 SUPABASE_SERVICE_ROLE_KEY=...
+SUPABASE_SHARED_MEMORY_TABLE=agent_memory
+SUPABASE_PROJECT_ID=... # optional: overrides inferred project ref/context
+SUPABASE_CT=...         # optional: explicit shared-memory context tag
+SUPABASE_MEMORY_SEARCH_RPC=... # optional: custom RPC name for pgvector search
+SUPABASE_MEMORY_SEARCH_LIMIT=6
+SUPABASE_MEMORY_RECENT_FETCH_LIMIT=160
 ```
 
-Then you can create a machine, clone this repo onto it, bootstrap the runtime, and optionally start the stack with:
+Memory workflow examples:
+- `log home chest at x=120, y=64, z=-240 in db`
+- `grab the chest from home`
+- `/memory find home`
+
+Run a Supabase memory smoke test (writes one test memory row, then verifies retrieval/enrichment):
 
 ```bash
-bash scripts/dedalus/provision-machine.sh
+npm run test-memory
 ```
-
-That provision script also renders machine-safe env files from your local `.env`:
-- app env -> `.env.dedalus`
-- orchestrator env -> `.env.openclaw`
-
-and copies them onto the Dedalus machine automatically.
-
-Recommended layout on the Dedalus machine:
-
-```bash
-/home/machine/Voyager-1
-/home/machine/openclaw-orchestrator
-/home/machine/logs
-/home/machine/photon-progress
-```
-
-Machine bootstrap:
-
-```bash
-cd /home/machine/Voyager-1
-cp .env.example .env
-$EDITOR .env
-
-bash scripts/dedalus/bootstrap-machine.sh
-```
-
-Optional OpenClaw checkout:
-
-```bash
-export OPENCLAW_ORCHESTRATOR_REPO=https://github.com/<org>/openclaw-orchestrator.git
-bash scripts/dedalus/install-openclaw-orchestrator.sh
-```
-
-Start the stack:
-
-```bash
-bash scripts/dedalus/start-stack.sh
-```
-
-Operational helpers:
-
-```bash
-bash scripts/dedalus/status.sh
-bash scripts/dedalus/stop-stack.sh
-```
-
-Notes:
-- `scripts/photon-stdin-bridge.mjs` now resolves the orchestrator path from `OPENCLAW_ORCHESTRATOR_PATH`, then falls back to `/opt/openclaw-orchestrator` and `/home/machine/openclaw-orchestrator`.
-- Photon itself does not need `SUPABASE_SERVICE_ROLE_KEY`, but the OpenClaw orchestrator does. Put those credentials in the orchestrator env file referenced by `OPENCLAW_ORCHESTRATOR_ENV_FILE`.
-- If you use Photon cloud mode on Dedalus, set `PHOTON_PROJECT_ID` and `PHOTON_PROJECT_SECRET`. Local Messages DB mode is macOS-only.
-- If you use OpenClaw gateways, set `OPENCLAW_ENABLE_GATEWAYS=1` and provide `OPENCLAW_GATEWAY_ENV_FILE`.
 
 ---
 

@@ -7,7 +7,7 @@ import voyager.utils as U
 from voyager.prompts import load_prompt
 from voyager.utils.json_utils import fix_and_parse_json
 from langchain.schema import HumanMessage, SystemMessage
-from langchain.vectorstores import Chroma
+from langchain_community.vectorstores import Chroma
 from voyager.llms import CerebrasChatModel, OpenAIEmbeddingFunction
 
 
@@ -385,12 +385,12 @@ class CurriculumAgent:
         )
         U.dump_json(self.failed_tasks, f"{self.ckpt_dir}/curriculum/failed_tasks.json")
 
-    def decompose_task(self, task, events):
+    def decompose_task(self, task, events, chest_observation="Chests: None\n\n"):
         messages = [
             SystemMessage(
                 content=load_prompt("curriculum_task_decomposition"),
             ),
-            self.render_human_message(events=events, chest_observation=""),
+            self.render_human_message(events=events, chest_observation=chest_observation),
             HumanMessage(content=f"Final task: {task}"),
         ]
         print(
@@ -427,7 +427,6 @@ class CurriculumAgent:
                 texts=[question],
             )
             U.dump_json(self.qa_cache, f"{self.ckpt_dir}/curriculum/qa_cache.json")
-            self.qa_cache_questions_vectordb.persist()
             questions.append(question)
             answers.append(answer)
         assert len(questions_new) == len(questions) == len(answers)
@@ -448,7 +447,6 @@ class CurriculumAgent:
                 texts=[question],
             )
             U.dump_json(self.qa_cache, f"{self.ckpt_dir}/curriculum/qa_cache.json")
-            self.qa_cache_questions_vectordb.persist()
         context = f"Question: {question}\n{answer}"
         return context
 

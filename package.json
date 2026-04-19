@@ -8,6 +8,9 @@
     "start": "node index.js",
     "dev": "node --watch index.js",
     "test": "node test.js",
+    "test-pipeline": "node scripts/pipeline-smoke.js",
+    "test-spawn": "node scripts/spawn-agent-smoke.js",
+    "test-memory": "node scripts/supabase-memory-smoke.js",
     "test-bridge": "node test-bridge.js",
     "multi-agent": "node multi-agent-example.js",
     "group-agents": "node group-chat-agents.js",
@@ -25,6 +28,7 @@
   "license": "MIT",
   "dependencies": {
     "@photon-ai/imessage-kit": "latest",
+    "better-sqlite3": "^12.9.0",
     "dotenv": "^17.4.2",
     "mineflayer": "^4.37.0",
     "spectrum-ts": "latest"

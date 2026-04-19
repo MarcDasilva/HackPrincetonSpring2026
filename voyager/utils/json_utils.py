@@ -145,11 +145,24 @@ def fix_and_parse_json(
     json_str: str, try_to_fix_with_gpt: bool = True
 ) -> Union[str, Dict[Any, Any]]:
     """Fix and parse JSON string"""
+    json_str = _normalize_json_candidate(json_str)
     try:
         json_str = json_str.replace("\t", "")
         return json.loads(json_str)
     except json.JSONDecodeError as _:  # noqa: F841
-        json_str = correct_json(json_str)
+        # Try direct payload extraction first (works for fenced arrays/objects).
+        try:
+            extracted = _extract_first_json_payload(json_str)
+            if extracted is not None:
+                return json.loads(extracted)
+        except json.JSONDecodeError:
+            pass
+
+        # Then try heuristic correction.
+        try:
+            json_str = correct_json(json_str)
+        except Exception:
+            pass
         try:
             return json.loads(json_str)
         except json.JSONDecodeError as _:  # noqa: F841
@@ -162,11 +175,9 @@ def fix_and_parse_json(
     # So let's try to find the first brace and then parse the rest
     #  of the string
     try:
-        brace_index = json_str.index("{")
-        json_str = json_str[brace_index:]
-        last_brace_index = json_str.rindex("}")
-        json_str = json_str[: last_brace_index + 1]
-        return json.loads(json_str)
+        extracted = _extract_first_json_payload(json_str)
+        if extracted is not None:
+            return json.loads(extracted)
     except json.JSONDecodeError as e:  # noqa: F841
         # if try_to_fix_with_gpt:
         #     print(
@@ -187,6 +198,75 @@ def fix_and_parse_json(
         #         return json_str
         # else:
         raise e
+
+    # Preserve prior error behavior with a parse attempt on the normalized input.
+    return json.loads(json_str)
+
+
+def _normalize_json_candidate(value: str) -> str:
+    if not isinstance(value, str):
+        return str(value)
+
+    text = value.strip()
+
+    # Remove ANSI color codes (common in terminal-formatted model traces).
+    text = re.sub(r"\x1b\[[0-9;]*m", "", text)
+
+    # If the whole payload is in a fenced block, unwrap it.
+    fence_match = re.match(r"^\s*```(?:json)?\s*([\s\S]*?)\s*```\s*$", text, re.IGNORECASE)
+    if fence_match:
+        text = fence_match.group(1).strip()
+
+    return text
+
+
+def _extract_first_json_payload(text: str) -> Union[str, None]:
+    """
+    Extract the first balanced JSON object or array from free-form text.
+    Handles both {...} and [...] payloads, including markdown prefixes/suffixes.
+    """
+    if not text:
+        return None
+
+    starts = []
+    first_obj = text.find("{")
+    if first_obj != -1:
+        starts.append((first_obj, "{", "}"))
+    first_arr = text.find("[")
+    if first_arr != -1:
+        starts.append((first_arr, "[", "]"))
+
+    if not starts:
+        return None
+
+    start_index, opener, closer = min(starts, key=lambda item: item[0])
+    depth = 0
+    in_string = False
+    escaped = False
+
+    for idx in range(start_index, len(text)):
+        ch = text[idx]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            continue
+
+        if ch == '"':
+            in_string = True
+            continue
+
+        if ch == opener:
+            depth += 1
+        elif ch == closer:
+            depth -= 1
+            if depth == 0:
+                return text[start_index : idx + 1]
+
+    return None
 
 
 # def fix_json(json_str: str, schema: str) -> str:

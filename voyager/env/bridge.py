@@ -136,6 +136,8 @@ class VoyagerEnv(gym.Env):
         self.reset_options = None
         self.connected = False
         self.server_paused = False
+        self.request_retry_count = int(os.getenv("VOYAGER_HTTP_RETRIES", "4"))
+        self.request_retry_backoff = float(os.getenv("VOYAGER_HTTP_RETRY_BACKOFF_SEC", "1.0"))
 
     def get_mineflayer_process(self, server_port):
         U.f_mkdir(self.log_path, "mineflayer")
@@ -170,27 +172,79 @@ class VoyagerEnv(gym.Env):
             self.mc_port = self.mc_instance.port
             self.reset_options["port"] = self.mc_instance.port
             print(f"Server started on port {self.reset_options['port']}")
-        retry = 0
-        while not self.mineflayer.is_running:
+        if not self.mineflayer.is_running:
             print("Mineflayer process has exited, restarting")
             self.mineflayer.run()
             if not self.mineflayer.is_running:
-                if retry > 3:
-                    raise RuntimeError("Mineflayer process failed to start")
-                else:
-                    continue
+                raise RuntimeError("Mineflayer process failed to start")
+            # Mineflayer was restarted, force a new /start handshake.
+            self.connected = False
+
+        # Avoid reconnect churn: only call /start when not yet connected.
+        if self.connected:
+            return None
+
+        retry = 0
+        max_retries = 5
+        while retry < max_retries:
             print(self.mineflayer.ready_line)
-            res = requests.post(
-                f"{self.server}/start",
-                json=self.reset_options,
-                timeout=self.request_timeout,
-            )
-            if res.status_code != 200:
-                self.mineflayer.stop()
-                raise RuntimeError(
-                    f"Minecraft server reply with code {res.status_code}"
+            try:
+                res = requests.post(
+                    f"{self.server}/start",
+                    json=self.reset_options,
+                    timeout=self.request_timeout,
                 )
-            return res.json()
+            except requests.exceptions.RequestException as exc:
+                self.connected = False
+                retry += 1
+                if retry >= max_retries:
+                    raise RuntimeError(
+                        f"Minecraft server start request failed after {max_retries} tries: {exc}"
+                    ) from exc
+                print(
+                    f"Minecraft server start request failed ({exc}), retrying ({retry}/{max_retries - 1})..."
+                )
+                self.mineflayer.stop()
+                time.sleep(1 + retry)
+                self.mineflayer.run()
+                continue
+            if res.status_code == 200:
+                self.connected = True
+                return res.json()
+
+            error_body = ""
+            try:
+                error_body = res.text
+            except Exception:
+                error_body = ""
+            self.connected = False
+            self.mineflayer.stop()
+            retry += 1
+            if retry >= max_retries:
+                raise RuntimeError(
+                    f"Minecraft server reply with code {res.status_code}: {error_body}"
+                )
+            error_lower = str(error_body).lower()
+            if "throttled" in error_lower or "please wait before reconnecting" in error_lower:
+                wait_seconds = 20
+                print(
+                    f"Minecraft server throttled reconnects; waiting {wait_seconds}s before retry ({retry}/{max_retries - 1})..."
+                )
+                time.sleep(wait_seconds)
+                self.mineflayer.run()
+                continue
+            print(
+                f"Minecraft server start failed ({res.status_code}), retrying ({retry}/{max_retries - 1})..."
+            )
+            time.sleep(2)
+            self.mineflayer.run()
+
+    def _reconnect_bridge(self):
+        self.connected = False
+        try:
+            self.check_process()
+        except Exception as reconnect_error:
+            raise RuntimeError(f"Bridge reconnect failed: {reconnect_error}") from reconnect_error
 
     def step(
         self,
@@ -199,20 +253,45 @@ class VoyagerEnv(gym.Env):
     ) -> Tuple[ObsType, SupportsFloat, bool, bool, Dict[str, Any]]:
         if not self.has_reset:
             raise RuntimeError("Environment has not been reset yet")
-        self.check_process()
-        self.unpause()
         data = {
             "code": code,
             "programs": programs,
         }
-        res = requests.post(
-            f"{self.server}/step", json=data, timeout=self.request_timeout
-        )
-        if res.status_code != 200:
-            raise RuntimeError("Failed to step Minecraft server")
-        returned_data = res.json()
-        self.pause()
-        return json.loads(returned_data)
+        last_error = None
+        max_retries = max(1, self.request_retry_count)
+
+        for attempt in range(1, max_retries + 1):
+            try:
+                self.check_process()
+                self.unpause()
+                res = requests.post(
+                    f"{self.server}/step", json=data, timeout=self.request_timeout
+                )
+                if res.status_code != 200:
+                    raise RuntimeError(f"Failed to step Minecraft server (status {res.status_code})")
+                returned_data = res.json()
+                self.pause()
+                return json.loads(returned_data)
+            except (requests.exceptions.RequestException, RuntimeError, json.JSONDecodeError) as exc:
+                last_error = exc
+                if attempt >= max_retries:
+                    break
+                wait_seconds = self.request_retry_backoff * attempt
+                print(
+                    f"Step request failed ({exc}); reconnecting and retrying "
+                    f"({attempt}/{max_retries - 1}) in {wait_seconds:.1f}s..."
+                )
+                time.sleep(wait_seconds)
+                try:
+                    self._reconnect_bridge()
+                except Exception as reconnect_error:
+                    last_error = reconnect_error
+                    if attempt >= max_retries:
+                        break
+
+        raise RuntimeError(
+            f"Failed to step Minecraft server after {max_retries} attempts: {last_error}"
+        ) from last_error
 
     def render(self):
         raise NotImplementedError("render is not implemented")
