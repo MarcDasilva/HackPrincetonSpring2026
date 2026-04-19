@@ -9,7 +9,12 @@ const logger = createLogger("foreman", config.logLevel);
 const store = await createStateStore(config);
 await ensureDefaultStockTargets(store);
 const openclaw = createOpenClawClients(config);
-const foreman = new ForemanService({ store, openclaw: openclaw.foreman, logger });
+const foreman = new ForemanService({
+  store,
+  openclaw: openclaw.foreman,
+  logger,
+  allowedDmSenders: config.photon.dmAllowedSenders,
+});
 
 logger.info("Starting OpenClaw foreman", { simulation: !config.supabase.url });
 foreman.start();

@@ -2,6 +2,12 @@ import dotenv from "dotenv";
 import { z } from "zod";
 import { WORKER_IDS } from "../shared/constants.js";
 
+const DEFAULT_WORKER_MINECRAFT = Object.freeze({
+  "worker-miner": { serverPort: 3011, botUsername: "miner_bot" },
+  "worker-builder": { serverPort: 3012, botUsername: "builder_bot" },
+  "worker-forager": { serverPort: 3013, botUsername: "forager_bot" },
+});
+
 dotenv.config();
 
 const boolFromEnv = (value, defaultValue = false) => {
@@ -19,11 +25,20 @@ const nullableString = (value) => {
   return String(value);
 };
 
+const listFromEnv = (...values) => values
+  .flatMap((value) => String(value || "").split(","))
+  .map((value) => value.trim())
+  .filter(Boolean)
+  .filter((value, index, all) => all.indexOf(value) === index);
+
 const envSchema = z.object({
   photon: z.object({
     apiKey: z.string().nullable(),
+    projectId: z.string().nullable(),
+    projectSecret: z.string().nullable(),
     mode: z.enum(["local", "cloud", "simulation"]).default("local"),
     groupId: z.string().nullable(),
+    dmAllowedSenders: z.array(z.string()).default([]),
     selfIdentifier: z.string().nullable(),
   }),
   supabase: z.object({
@@ -44,6 +59,12 @@ const envSchema = z.object({
     mcPort: z.number().int().positive().nullable(),
     serverPort: z.number().int().positive().nullable(),
     botUsername: z.string().nullable(),
+    workers: z.record(z.object({
+      mcHost: z.string().nullable(),
+      mcPort: z.number().int().positive().nullable(),
+      serverPort: z.number().int().positive(),
+      botUsername: z.string(),
+    })),
     simulationMode: z.boolean(),
   }),
   dedalus: z.object({
@@ -60,11 +81,33 @@ const envSchema = z.object({
 });
 
 export function loadEnv(raw = process.env) {
+  const workerMinecraft = Object.fromEntries(WORKER_IDS.map((workerId) => {
+    const prefix = workerId.toUpperCase().replaceAll("-", "_");
+    const defaults = DEFAULT_WORKER_MINECRAFT[workerId];
+    return [workerId, {
+      mcHost: nullableString(raw[`VOYAGER_${prefix}_MC_HOST`] || raw.VOYAGER_MC_HOST),
+      mcPort: raw[`VOYAGER_${prefix}_MC_PORT`]
+        ? intFromEnv(raw[`VOYAGER_${prefix}_MC_PORT`], 25565)
+        : (raw.VOYAGER_MC_PORT ? intFromEnv(raw.VOYAGER_MC_PORT, 25565) : null),
+      serverPort: raw[`VOYAGER_${prefix}_SERVER_PORT`]
+        ? intFromEnv(raw[`VOYAGER_${prefix}_SERVER_PORT`], defaults.serverPort)
+        : defaults.serverPort,
+      botUsername: nullableString(raw[`VOYAGER_${prefix}_BOT_USERNAME`] || defaults.botUsername),
+    }];
+  }));
+
   const config = {
     photon: {
       apiKey: nullableString(raw.PHOTON_API_KEY),
+      projectId: nullableString(raw.PHOTON_PROJECT_ID),
+      projectSecret: nullableString(raw.PHOTON_PROJECT_SECRET),
       mode: raw.PHOTON_MODE || "local",
       groupId: nullableString(raw.IMESSAGE_GROUP_ID),
+      dmAllowedSenders: listFromEnv(
+        raw.IMESSAGE_ALLOWED_DM_SENDERS,
+        raw.PHOTON_ALLOWED_DM_SENDERS,
+        raw.USER_IMESSAGE_HANDLE,
+      ),
       selfIdentifier: nullableString(raw.PHOTON_SELF_IDENTIFIER),
     },
     supabase: {
@@ -101,6 +144,7 @@ export function loadEnv(raw = process.env) {
       mcPort: raw.VOYAGER_MC_PORT ? intFromEnv(raw.VOYAGER_MC_PORT, 25565) : null,
       serverPort: raw.VOYAGER_SERVER_PORT ? intFromEnv(raw.VOYAGER_SERVER_PORT, 3000) : null,
       botUsername: nullableString(raw.VOYAGER_BOT_USERNAME),
+      workers: workerMinecraft,
       simulationMode: boolFromEnv(raw.VOYAGER_SIMULATION_MODE, true),
     },
     dedalus: {
@@ -127,8 +171,16 @@ export function assertServiceEnv(config, serviceName) {
   if (serviceName === "supabase" && (!config.supabase.url || !config.supabase.serviceRoleKey)) {
     throw new Error("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required for Supabase-backed services.");
   }
-  if (serviceName === "photon" && config.photon.mode !== "simulation" && !config.photon.groupId) {
-    throw new Error("IMESSAGE_GROUP_ID is required for the Photon bridge outside simulation mode.");
+  if (
+    serviceName === "photon" &&
+    config.photon.mode !== "simulation" &&
+    !config.photon.groupId &&
+    config.photon.dmAllowedSenders.length === 0
+  ) {
+    throw new Error("IMESSAGE_GROUP_ID or IMESSAGE_ALLOWED_DM_SENDERS is required for the Photon bridge outside simulation mode.");
+  }
+  if (serviceName === "photon" && config.photon.mode === "cloud" && (!config.photon.projectId || !config.photon.projectSecret)) {
+    throw new Error("PHOTON_PROJECT_ID and PHOTON_PROJECT_SECRET are required when PHOTON_MODE=cloud.");
   }
   if (serviceName === "worker" && !WORKER_IDS.includes(config.workerId)) {
     throw new Error(`WORKER_ID must be one of: ${WORKER_IDS.join(", ")}`);

@@ -2,7 +2,7 @@
 
 This branch turns the hackathon prototype into a real multi-agent orchestration system:
 
-1. A macOS Photon bridge watches one iMessage group chat.
+1. A macOS Photon bridge watches either one configured iMessage group chat or allowlisted DMs.
 2. Photon writes inbound human commands to Supabase `chat_messages`.
 3. A control-plane OpenClaw foreman reads Supabase state, creates jobs, and assigns workers.
 4. Three Dedalus worker VMs run worker OpenClaw runtimes over Voyager execution.
@@ -66,6 +66,9 @@ npm run worker:forager
 
 Photon must run on a Mac host with iMessage access. Dedalus Linux VMs run the foreman and worker runtimes, not the iMessage bridge.
 
+For a DM-only setup, put your phone number or iCloud email in `IMESSAGE_ALLOWED_DM_SENDERS`.
+`USER_IMESSAGE_HANDLE` is also accepted as a convenience fallback. Replies stay in the same DM thread.
+
 ## Environment
 
 Copy `.env.example` to `.env` and fill in real values for Supabase, Photon, OpenClaw, Voyager, and Dedalus. Fake OpenClaw and fake Voyager modes are available for local simulation.
@@ -95,6 +98,9 @@ node scripts/deploy-worker-vm.js --worker=forager
 
 Store VM-local secrets in `/home/machine/openclaw.env`.
 
+For the Hetzner-to-Dedalus migration checklist and branch choices, see
+`docs/dedalus-migration.md`.
+
 ## Status
 
 Implemented:
@@ -102,14 +108,14 @@ Implemented:
 - canonical persistent-memory schema
 - Supabase and simulation state stores
 - OpenClaw HTTP/fake client
-- Photon bridge adapter
+- Photon bridge adapter for a configured group or allowlisted DMs
 - foreman job generation and assignment
 - worker heartbeat, status publishing, and Voyager adapter
 - seeded simulation and tests
 
 Blocked by real infrastructure:
 
-- real Photon group id and macOS permissions
+- real Photon group id or allowlisted DM sender, plus macOS permissions
 - deployed OpenClaw gateways
 - Supabase project credentials
 - Voyager/Minecraft runtime on worker VMs

@@ -8,6 +8,7 @@
     "start": "node src/services/run-foreman.js",
     "foreman": "node src/services/run-foreman.js",
     "photon": "node src/services/run-photon-bridge.js",
+    "photon:create-group": "node scripts/create-photon-agent-group.js",
     "worker": "node src/services/run-worker.js",
     "worker:miner": "WORKER_ID=worker-miner node src/services/run-worker.js",
     "worker:builder": "WORKER_ID=worker-builder node src/services/run-worker.js",
@@ -32,10 +33,11 @@
   ],
   "license": "MIT",
   "dependencies": {
+    "@photon-ai/imessage-kit": "^3.0.0-rc.2",
     "@supabase/supabase-js": "^2.49.1",
+    "better-sqlite3": "^12.9.0",
     "dotenv": "^16.4.7",
     "spectrum-ts": "latest",
     "zod": "^3.24.2"
-  },
-  "devDependencies": {}
+  }
 }

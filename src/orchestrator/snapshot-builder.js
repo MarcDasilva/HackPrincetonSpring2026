@@ -24,11 +24,21 @@ export async function buildTaskBrief(store, job, worker, triggerMessage = null) 
   const inventory = worker.metadata?.inventory || [];
 
   return {
-    objective: `Complete ${job.kind}${job.target ? ` for ${job.target}` : ""}${job.quantity ? ` x${job.quantity}` : ""}`,
+    objective: job.payload?.objective || `Complete ${job.kind}${job.target ? ` for ${job.target}` : ""}${job.quantity ? ` x${job.quantity}` : ""}`,
     kind: job.kind,
     target: job.target,
     quantity: job.quantity,
     assigned_agent_id: worker.agent_id,
+    coordination: {
+      skill_id: job.payload?.skill_id || null,
+      plan_id: job.payload?.plan_id || null,
+      plan_summary: job.payload?.plan_summary || null,
+      plan_step: job.payload?.plan_step || null,
+      depends_on: job.payload?.depends_on || [],
+      required_materials: job.payload?.required_materials || [],
+      expected_outputs: job.payload?.outputs || [],
+      notes: job.payload?.coordination_notes || [],
+    },
     source_chat: triggerMessage?.source_chat || job.payload?.source_chat || "group_chat",
     success_criteria: [
       "Update jobs_history with completion or blocker result.",
@@ -47,6 +57,13 @@ export async function buildTaskBrief(store, job, worker, triggerMessage = null) 
       memories,
       stock: [],
       recent_human_override: triggerMessage,
+      current_plan: {
+        skill_id: job.payload?.skill_id || null,
+        plan_id: job.payload?.plan_id || null,
+        plan_step: job.payload?.plan_step || null,
+        depends_on: job.payload?.depends_on || [],
+      },
     },
+    voyager_sub_goals: job.payload?.voyager_sub_goals || [],
   };
 }

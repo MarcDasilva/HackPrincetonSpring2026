@@ -1,4 +1,4 @@
-import { JOB_STATUS, WORLD_OBJECT_TYPES } from "../shared/constants.js";
+import { JOB_STATUS, WORKER_IDS, WORLD_OBJECT_TYPES } from "../shared/constants.js";
 import { JOB_KINDS } from "../shared/job-types.js";
 
 export function createJobFromIntent(intent) {
@@ -7,16 +7,66 @@ export function createJobFromIntent(intent) {
     kind: intent.kind,
     target: intent.target,
     quantity: intent.quantity,
-    priority: intent.shortcut ? 80 : 60,
+    priority: intent.priority ?? (intent.shortcut ? 80 : 60),
     status: JOB_STATUS.pending,
     source: "human",
     payload: {
       raw_text: intent.raw_text,
+      request_text: intent.request_text || intent.raw_text,
+      objective: intent.objective || intent.request_text || intent.raw_text || null,
       source_message_id: intent.source_message_id,
       source_chat: intent.source_chat,
+      sender: intent.sender || null,
+      preferred_worker_id: intent.preferred_worker_id || null,
       preferred_worker_role: intent.preferred_worker_role,
+      target_worker_ids: intent.target_worker_ids || [],
+      skill_id: intent.skill_id || null,
+      plan_id: intent.plan_id || null,
+      plan_summary: intent.plan_summary || null,
+      plan_index: intent.plan_index ?? null,
+      plan_step: intent.plan_step || null,
+      depends_on: intent.depends_on || [],
+      required_materials: intent.required_materials || [],
+      outputs: intent.outputs || [],
+      coordination_notes: intent.coordination_notes || [],
+      voyager_sub_goals: intent.voyager_sub_goals || [],
     },
   };
+}
+
+function createSingleJobSpecs(intent) {
+  const explicitTargets = intent.target_worker_ids || [];
+  if (explicitTargets.length > 1) {
+    return explicitTargets.map((workerId) => ({
+      ...intent,
+      preferred_worker_id: workerId,
+      target_worker_ids: [workerId],
+      priority: 85,
+    }));
+  }
+  return [intent];
+}
+
+export function createJobsFromIntent(intent) {
+  const explicitTargets = intent.target_worker_ids || [];
+  const shouldUsePlan = intent.plan?.jobs?.length && (explicitTargets.length === 0 || explicitTargets.length === WORKER_IDS.length);
+  const specs = shouldUsePlan
+    ? intent.plan.jobs.map((job, index) => ({
+        ...intent,
+        ...job,
+        target_worker_ids: [job.preferred_worker_id].filter(Boolean),
+        skill_id: intent.plan.skill_id || null,
+        plan_id: intent.plan.plan_id || null,
+        plan_summary: intent.plan.summary,
+        plan_index: index,
+        priority: 90 - index,
+      }))
+    : createSingleJobSpecs(intent);
+
+  return specs.map((spec, index) => createJobFromIntent({
+    ...spec,
+    job_id: specs.length > 1 ? `${intent.job_id}-${index + 1}` : spec.job_id || intent.job_id,
+  }));
 }
 
 function stockCount(worldObjects, itemName) {

@@ -1,9 +1,21 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
 
-const machineId = process.argv.find((arg) => arg.startsWith("--machine="))?.split("=")[1] || process.env.DEDALUS_CONTROL_MACHINE_ID;
 const role = process.argv.find((arg) => arg.startsWith("--role="))?.split("=")[1] || "foreman";
-if (!machineId) throw new Error("Pass --machine=<id> or set DEDALUS_CONTROL_MACHINE_ID");
+const machineEnvByRole = {
+  foreman: "DEDALUS_CONTROL_MACHINE_ID",
+  photon: "DEDALUS_CONTROL_MACHINE_ID",
+  voyager: "DEDALUS_CONTROL_MACHINE_ID",
+  "multi-agent": "DEDALUS_CONTROL_MACHINE_ID",
+  "openclaw-gateways": "DEDALUS_CONTROL_MACHINE_ID",
+  "worker-miner": "DEDALUS_WORKER_MINER_MACHINE_ID",
+  "worker-builder": "DEDALUS_WORKER_BUILDER_MACHINE_ID",
+  "worker-forager": "DEDALUS_WORKER_FORAGER_MACHINE_ID",
+};
+const machineArg = process.argv.find((arg) => arg.startsWith("--machine="))?.split("=")[1];
+const machineEnv = machineEnvByRole[role] || "DEDALUS_CONTROL_MACHINE_ID";
+const machineId = machineArg || process.env[machineEnv] || process.env.DEDALUS_CONTROL_MACHINE_ID;
+if (!machineId) throw new Error(`Pass --machine=<id> or set ${machineEnv}`);
 
 const command = [
   `if [ -f /home/machine/${role}.pid ]; then kill $(cat /home/machine/${role}.pid) || true; fi`,
@@ -16,8 +28,8 @@ const result = spawnSync("dedalus", [
   "--machine-id",
   machineId,
   "--command",
-  `bash -lc '${command}'`,
+  JSON.stringify(["/bin/bash", "-c", command]),
   "--timeout-ms",
   "120000",
-], { stdio: "inherit" });
+], { input: "{}", stdio: ["pipe", "inherit", "inherit"] });
 process.exit(result.status || 0);

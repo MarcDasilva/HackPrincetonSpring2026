@@ -10,15 +10,16 @@ assertServiceEnv(config, "worker");
 const logger = createLogger(config.workerId, config.logLevel);
 const store = await createStateStore(config);
 const openclaw = createOpenClawClients(config);
+const workerMinecraft = config.voyager.workers[config.workerId] || {};
 const voyager = new VoyagerAdapter({
   voyagerPath: config.voyager.path,
   pythonPath: config.voyager.pythonPath,
   ckptDir: config.voyager.ckptDir,
   minecraft: {
-    host: config.voyager.mcHost,
-    port: config.voyager.mcPort,
-    serverPort: config.voyager.serverPort,
-    botUsername: config.voyager.botUsername,
+    host: workerMinecraft.mcHost || config.voyager.mcHost,
+    port: workerMinecraft.mcPort || config.voyager.mcPort,
+    serverPort: workerMinecraft.serverPort || config.voyager.serverPort,
+    botUsername: workerMinecraft.botUsername || config.voyager.botUsername,
   },
   simulationMode: config.voyager.simulationMode,
   workerId: config.workerId,
@@ -33,7 +34,16 @@ const runtime = new WorkerRuntime({
   logger,
 });
 
-logger.info("Starting OpenClaw worker", { workerId: config.workerId, voyagerSimulation: config.voyager.simulationMode });
+logger.info("Starting OpenClaw worker", {
+  workerId: config.workerId,
+  voyagerSimulation: config.voyager.simulationMode,
+  minecraft: {
+    host: workerMinecraft.mcHost || config.voyager.mcHost,
+    port: workerMinecraft.mcPort || config.voyager.mcPort,
+    serverPort: workerMinecraft.serverPort || config.voyager.serverPort,
+    botUsername: workerMinecraft.botUsername || config.voyager.botUsername,
+  },
+});
 await runtime.start();
 
 process.on("SIGINT", () => {

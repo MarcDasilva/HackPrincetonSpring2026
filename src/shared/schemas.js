@@ -67,6 +67,7 @@ export const taskBriefSchema = z.object({
   target: z.string().nullable().optional(),
   quantity: z.number().int().positive().nullable().optional(),
   assigned_agent_id: z.string(),
+  coordination: z.record(z.any()).default({}),
   success_criteria: z.array(z.string()).default([]),
   constraints: z.array(z.string()).default([]),
   relevant_context: z.object({

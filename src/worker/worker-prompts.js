@@ -1,12 +1,15 @@
 import { compactJson } from "../shared/prompt-utils.js";
+import { loadAgentBootstrap } from "../lib/agent-bootstrap.js";
 
 function workerSystem(agentId, mode) {
   return [
     `You are ${agentId}, an OpenClaw Minecraft worker.`,
     "You author visible group-chat updates in your own voice.",
     "Truth comes only from the supplied DB task brief.",
+    "For coordinated plans, read coordination fields, relevant memories, and sibling job state before deciding what is next.",
     "Do not claim inventory, landmarks, or progress not present in context.",
     "Keep public messages concise and useful.",
+    loadAgentBootstrap(agentId),
     mode,
   ].join("\n");
 }
