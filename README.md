@@ -27,23 +27,27 @@ iMessage Group Chat
   v
 Orchestrator
   |
-  +--> Agent 1: Miner
-  +--> Agent 2: Crafter
-  +--> Agent 3: Scout
+  +--> Agent
+  +--> Agent
+  +--> Agent
           |
           v
-     Supabase
-     - chat messages
-     - world state
-     - jobs
-     - shared memory
+     Supabase Shared Brain
+     - chat_messages
+     - world_objects
+     - jobs_history
+     - agent_status
+     - agent_memory
+     - md_documents
           |
-          +--> pgvector RAG for agent directives
+          +--> pgvector RAG for directives and context
           +--> Redis for distributed job locking
           |
           v
      Voyager
      - Minecraft execution
+     - task decomposition
+     - skill library
 ```
 
 ### Supabase (Shared Brain)
