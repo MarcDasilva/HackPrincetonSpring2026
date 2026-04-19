@@ -110,6 +110,11 @@ install_repo_dependencies() {
   cd "$APP_HOME"
   npm install
 
+  if [[ "${DEDALUS_MINIMAL_BOOTSTRAP:-1}" == "1" ]]; then
+    echo "Minimal bootstrap enabled; skipping Voyager environment package builds."
+    return 0
+  fi
+
   (
     cd "$APP_HOME/voyager/env/mineflayer/mineflayer-collectblock"
     npm install
@@ -138,9 +143,16 @@ main() {
   load_app_env
   install_system_packages
   install_local_node
-  install_python_env
+
+  if [[ "${DEDALUS_MINIMAL_BOOTSTRAP:-1}" != "1" ]]; then
+    install_python_env
+  fi
+
   install_repo_dependencies
-  install_orchestrator_dependencies
+
+  if [[ "${VOYAGER_ORCHESTRATION_BACKEND:-local}" == "openclaw" ]]; then
+    install_orchestrator_dependencies
+  fi
 
   cat <<EOF
 Bootstrap complete.
