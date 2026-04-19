@@ -1,4 +1,9 @@
 {
+  "type": "module",
+  "scripts": {
+    "load:md-docs": "node scripts/load-md-documents.js",
+    "test:agent-flow": "node scripts/test-agent-flow.js"
+  },
   "dependencies": {
     "@supabase/supabase-js": "^2.103.3",
     "@upstash/redis": "^1.37.0",
