@@ -1,6 +1,6 @@
-# Voyager-1
+# OpenCraft
 
-Voyager-1 is a hybrid project that connects iMessage conversations to real Minecraft execution through Voyager bots.
+OpenClaw for Minecraft
 
 ![Voyager-1 Preview](thumbnail.png)
 
