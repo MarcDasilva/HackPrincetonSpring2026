@@ -16,11 +16,47 @@ const Chests = require("./lib/observation/chests");
 const { plugin: tool } = require("mineflayer-tool");
 
 let bot = null;
+let keepAliveInterval = null;
 
 const app = express();
 
 app.use(bodyParser.json({ limit: "50mb" }));
 app.use(bodyParser.urlencoded({ limit: "50mb", extended: false }));
+
+function clearKeepAlive() {
+    if (keepAliveInterval) {
+        clearInterval(keepAliveInterval);
+        keepAliveInterval = null;
+    }
+}
+
+function startKeepAlive(currentBot) {
+    clearKeepAlive();
+    keepAliveInterval = setInterval(() => {
+        if (!currentBot || currentBot !== bot) {
+            clearKeepAlive();
+            return;
+        }
+        if (!currentBot.entity) return;
+        if (currentBot.pathfinder?.isMoving?.()) return;
+
+        try {
+            currentBot.look(
+                currentBot.entity.yaw + 0.35,
+                currentBot.entity.pitch,
+                true
+            ).catch(() => {});
+            currentBot.setControlState("jump", true);
+            setTimeout(() => {
+                if (currentBot === bot) {
+                    currentBot.setControlState("jump", false);
+                }
+            }, 350);
+        } catch (error) {
+            console.log(`Keepalive tick failed: ${error.message}`);
+        }
+    }, 15000);
+}
 
 app.post("/start", (req, res) => {
     if (bot) onDisconnect("Restarting bot");
@@ -138,23 +174,26 @@ app.post("/start", (req, res) => {
         res.json(bot.observe());
 
         initCounter(bot);
+        startKeepAlive(bot);
         bot.chat("/gamerule keepInventory true");
         bot.chat("/gamerule doDaylightCycle false");
     });
 
     function onConnectionFailed(e) {
+        clearKeepAlive();
         console.log(e);
         bot = null;
         res.status(400).json({ error: e });
     }
     function onDisconnect(message) {
+        clearKeepAlive();
         if (bot && bot.viewer) {
             bot.viewer.close();
         }
         if (bot) {
             bot.end();
         }
-        console.log(message);
+        console.log(typeof message === "string" ? message : JSON.stringify(message));
         bot = null;
     }
 });

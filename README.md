@@ -28,6 +28,102 @@ npm run voyager
 
 Without Photon credentials, use a DM with the bot account on your Mac. With Photon credentials configured, group chats are supported.
 
+## Photon Orchestrator
+
+For the approval-based Photon handoff flow, run:
+
+```bash
+npm run photon
+```
+
+Photon will now:
+- propose the agent plan first
+- wait for you to reply `YES` or `/approve`
+- keep revising the plan until you confirm it
+- launch the OpenClaw handoff only after approval
+- write proposal/run tracking files to `PHOTON_TRACKING_DIR` (default: `./photon-progress`)
+
+Useful chat commands:
+- `/status`
+- `/status RUN_ID`
+- `/approve`
+- `/cancel`
+- `/help`
+
+## Dedalus Machine Deployment
+
+Dedalus DCS machines are full Linux VMs with persistent `/home/machine` storage and an ephemeral root filesystem. That means your repo, checkpoints, logs, and tracking files should live under `/home/machine`, and you should rerun bootstrap work after a machine wakes up.
+
+From your laptop, install the official Dedalus CLI and export the required auth variables from the CLI docs:
+
+```bash
+export DEDALUS_API_KEY=...
+```
+
+For a full Photon + OpenClaw deployment, your local `.env` should also include:
+
+```bash
+SUPABASE_URL=...
+SUPABASE_SERVICE_ROLE_KEY=...
+```
+
+Then you can create a machine, clone this repo onto it, bootstrap the runtime, and optionally start the stack with:
+
+```bash
+bash scripts/dedalus/provision-machine.sh
+```
+
+That provision script also renders machine-safe env files from your local `.env`:
+- app env -> `.env.dedalus`
+- orchestrator env -> `.env.openclaw`
+
+and copies them onto the Dedalus machine automatically.
+
+Recommended layout on the Dedalus machine:
+
+```bash
+/home/machine/Voyager-1
+/home/machine/openclaw-orchestrator
+/home/machine/logs
+/home/machine/photon-progress
+```
+
+Machine bootstrap:
+
+```bash
+cd /home/machine/Voyager-1
+cp .env.example .env
+$EDITOR .env
+
+bash scripts/dedalus/bootstrap-machine.sh
+```
+
+Optional OpenClaw checkout:
+
+```bash
+export OPENCLAW_ORCHESTRATOR_REPO=https://github.com/<org>/openclaw-orchestrator.git
+bash scripts/dedalus/install-openclaw-orchestrator.sh
+```
+
+Start the stack:
+
+```bash
+bash scripts/dedalus/start-stack.sh
+```
+
+Operational helpers:
+
+```bash
+bash scripts/dedalus/status.sh
+bash scripts/dedalus/stop-stack.sh
+```
+
+Notes:
+- `scripts/photon-stdin-bridge.mjs` now resolves the orchestrator path from `OPENCLAW_ORCHESTRATOR_PATH`, then falls back to `/opt/openclaw-orchestrator` and `/home/machine/openclaw-orchestrator`.
+- Photon itself does not need `SUPABASE_SERVICE_ROLE_KEY`, but the OpenClaw orchestrator does. Put those credentials in the orchestrator env file referenced by `OPENCLAW_ORCHESTRATOR_ENV_FILE`.
+- If you use Photon cloud mode on Dedalus, set `PHOTON_PROJECT_ID` and `PHOTON_PROJECT_SECRET`. Local Messages DB mode is macOS-only.
+- If you use OpenClaw gateways, set `OPENCLAW_ENABLE_GATEWAYS=1` and provide `OPENCLAW_GATEWAY_ENV_FILE`.
+
 ---
 
 # Voyager: An Open-Ended Embodied Agent with Large Language Models

@@ -84,6 +84,8 @@ celerybeat-schedule
 
 # Environments
 .env
+.env.dedalus
+.env.openclaw
 .venv
 # env/
 venv/
@@ -126,5 +128,6 @@ debug_*
 .tabnine_root
 
 logs/
+photon-progress/
 plot_iter.py
 *.svg

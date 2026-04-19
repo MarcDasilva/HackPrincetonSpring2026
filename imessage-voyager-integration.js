@@ -42,7 +42,7 @@ const VOYAGER_MC_AUTH = process.env.VOYAGER_MC_AUTH || "offline";
 const VOYAGER_MC_PASSWORD = process.env.VOYAGER_MC_PASSWORD || "";
 const VOYAGER_MC_VERSION = process.env.VOYAGER_MC_VERSION || "";
 const VOYAGER_MC_PROFILES_DIR = process.env.VOYAGER_MC_PROFILES_DIR || "";
-const VOYAGER_PATH = process.env.VOYAGER_PATH || "/Users/williamzhang/Hackathon!!/voyager-repo"; // Path to Voyager repo
+const VOYAGER_PATH = process.env.VOYAGER_PATH || __dirname; // Path to Voyager repo
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "YOUR_API_KEY_HERE";
 const IMESSAGE_BOT_ID = process.env.IMESSAGE_BOT_ID || MY_NUMBER;
 
