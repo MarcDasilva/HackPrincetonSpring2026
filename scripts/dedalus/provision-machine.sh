@@ -67,14 +67,16 @@ run_execution() {
         --machine-id "$machine_id" \
         --command "$command_payload" \
         --stdin "$stdin_source" \
-        --format json
+        --format json \
+        </dev/null
     )"
   else
     create_json="$(
       dedalus machines:executions create \
         --machine-id "$machine_id" \
         --command "$command_payload" \
-        --format json
+        --format json \
+        </dev/null
     )"
   fi
 
@@ -85,7 +87,8 @@ run_execution() {
       dedalus machines:executions retrieve \
         --machine-id "$machine_id" \
         --execution-id "$execution_id" \
-        --format json
+        --format json \
+        </dev/null
     )"
     status="$(printf '%s' "$retrieve_json" | json_get status)"
     case "$status" in
@@ -100,13 +103,15 @@ run_execution() {
           dedalus machines:executions output \
             --machine-id "$machine_id" \
             --execution-id "$execution_id" \
-            --format json
+            --format json \
+            </dev/null
         )"
-        printf '%s' "$output_json" | python3 - <<'PY'
+        DEDALUS_OUTPUT_JSON="$output_json" python3 - <<'PY'
 import json
+import os
 import sys
 
-data = json.loads(sys.stdin.read())
+data = json.loads(os.environ["DEDALUS_OUTPUT_JSON"])
 stdout = data.get("stdout", "")
 stderr = data.get("stderr", "")
 if stdout:
@@ -127,13 +132,15 @@ PY
     dedalus machines:executions output \
       --machine-id "$machine_id" \
       --execution-id "$execution_id" \
-      --format json
+      --format json \
+      </dev/null
   )"
-  printf '%s' "$output_json" | python3 - <<'PY'
+  DEDALUS_OUTPUT_JSON="$output_json" python3 - <<'PY'
 import json
+import os
 import sys
 
-data = json.loads(sys.stdin.read())
+data = json.loads(os.environ["DEDALUS_OUTPUT_JSON"])
 stdout = data.get("stdout", "")
 if stdout:
     sys.stdout.write(stdout)
@@ -190,6 +197,24 @@ sync_repo_to_machine() {
     "@file://$base64_path"
 
   rm -f "$archive_path" "$base64_path"
+}
+
+sync_dedalus_scripts_to_machine() {
+  local machine_id="$1"
+  local remote_dir="$2"
+  local rel_path
+
+  while IFS= read -r rel_path; do
+    copy_file_to_machine \
+      "$machine_id" \
+      "$APP_HOME/$rel_path" \
+      "$remote_dir/$rel_path"
+  done < <(
+    cd "$APP_HOME"
+    find scripts/dedalus -maxdepth 1 -type f \( -name '*.sh' -o -name '*.py' \) | sort
+  )
+
+  run_remote "$machine_id" "chmod +x $(printf '%q' "$remote_dir")/scripts/dedalus/"'*.sh'
 }
 
 wait_for_machine() {
@@ -254,8 +279,13 @@ main() {
   printf -v branch_q '%q' "$branch"
   printf -v remote_dir_q '%q' "$remote_dir"
 
-  run_remote "$machine_id" \
-    "export DEBIAN_FRONTEND=noninteractive; command -v git >/dev/null 2>&1 || (apt-get update && apt-get install -y git ca-certificates)"
+  if [[ "${DEDALUS_SKIP_APT:-1}" == "1" ]]; then
+    run_remote "$machine_id" \
+      "command -v git >/dev/null 2>&1 || { echo 'git is required but missing and DEDALUS_SKIP_APT=1' >&2; exit 1; }"
+  else
+    run_remote "$machine_id" \
+      "export DEBIAN_FRONTEND=noninteractive; command -v git >/dev/null 2>&1 || (apt-get update && apt-get install -y git ca-certificates)"
+  fi
 
   if [[ "${DEDALUS_SYNC_LOCAL_REPO:-1}" == "1" ]]; then
     sync_repo_to_machine "$machine_id" "$remote_dir"
@@ -264,7 +294,13 @@ main() {
       "mkdir -p /home/machine && if [[ -d $remote_dir_q/.git ]]; then git -C $remote_dir_q fetch origin --prune && git -C $remote_dir_q checkout $branch_q && git -C $remote_dir_q pull --ff-only origin $branch_q; else git clone --branch $branch_q $repo_url_q $remote_dir_q; fi"
   fi
 
-  run_remote "$machine_id" "cd $remote_dir_q && bash scripts/dedalus/bootstrap-machine.sh"
+  if [[ "${DEDALUS_SYNC_DEDALUS_SCRIPTS:-1}" == "1" ]]; then
+    sync_dedalus_scripts_to_machine "$machine_id" "$remote_dir"
+  fi
+
+  local dedalus_skip_apt_q
+  printf -v dedalus_skip_apt_q '%q' "${DEDALUS_SKIP_APT:-1}"
+  run_remote "$machine_id" "cd $remote_dir_q && DEDALUS_SKIP_APT=$dedalus_skip_apt_q bash scripts/dedalus/bootstrap-machine.sh"
 
   local source_env_file
   source_env_file="${DEDALUS_SOURCE_ENV_FILE:-$APP_HOME/.env}"

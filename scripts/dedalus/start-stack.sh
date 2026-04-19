@@ -15,12 +15,14 @@ main() {
   ensure_dirs
   load_app_env
   activate_runtime
+  local backend
+  backend="${VOYAGER_ORCHESTRATION_BACKEND:-local}"
 
-  if [[ "${OPENCLAW_ENABLE_GATEWAYS:-0}" == "1" ]]; then
+  if [[ "$backend" == "openclaw" && "${OPENCLAW_ENABLE_GATEWAYS:-0}" == "1" ]]; then
     "$SCRIPT_DIR/start-gateways.sh"
   fi
 
-  if [[ -d "$OPENCLAW_ORCHESTRATOR_PATH" && -f "$OPENCLAW_ORCHESTRATOR_PATH/src/services/run-foreman.js" ]]; then
+  if [[ "$backend" == "openclaw" && -d "$OPENCLAW_ORCHESTRATOR_PATH" && -f "$OPENCLAW_ORCHESTRATOR_PATH/src/services/run-foreman.js" ]]; then
     if [[ -f "$OPENCLAW_ORCHESTRATOR_ENV_FILE" ]]; then
       set -a
       . "$OPENCLAW_ORCHESTRATOR_ENV_FILE"
@@ -42,7 +44,7 @@ main() {
         "$(render_worker_command "$worker")"
     done
   else
-    echo "Skipping OpenClaw app start: $OPENCLAW_ORCHESTRATOR_PATH is missing or incomplete."
+    echo "Skipping OpenClaw app start (backend=$backend)."
   fi
 
   if [[ -n "${PHOTON_PROJECT_ID:-}" && -n "${PHOTON_PROJECT_SECRET:-}" ]]; then

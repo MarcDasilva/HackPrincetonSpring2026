@@ -26,14 +26,19 @@ print_process_status() {
 main() {
   ensure_dirs
   load_app_env
+  local backend
+  backend="${VOYAGER_ORCHESTRATION_BACKEND:-local}"
 
   print_process_status "photon-index"
-  print_process_status "openclaw-foreman"
+  echo "orchestration-backend: $backend"
 
-  local worker
-  for worker in $OPENCLAW_WORKER_IDS; do
-    print_process_status "openclaw-$worker"
-  done
+  if [[ "$backend" == "openclaw" ]]; then
+    print_process_status "openclaw-foreman"
+    local worker
+    for worker in $OPENCLAW_WORKER_IDS; do
+      print_process_status "openclaw-$worker"
+    done
+  fi
 
   echo
   echo "Logs: $LOG_DIR"

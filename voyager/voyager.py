@@ -8,6 +8,7 @@ import voyager.utils as U
 from .agents import ActionAgent, CriticAgent, CurriculumAgent, SkillManager
 from .env import VoyagerEnv
 from .llms import load_env_file
+from .mcp_bridge import MCPContextBridge
 
 
 # TODO: remove event memory
@@ -54,6 +55,10 @@ class Voyager:
         ckpt_dir: str = "ckpt",
         skill_library_dir: str = None,
         resume: bool = False,
+        mcp_context_enabled: bool | None = None,
+        mcp_context_command: str = None,
+        mcp_context_timeout_sec: float = None,
+        mcp_context_max_chars: int = None,
     ):
         """
         The main class for Voyager.
@@ -114,6 +119,10 @@ class Voyager:
         :param ckpt_dir: checkpoint dir
         :param skill_library_dir: skill library dir
         :param resume: whether to resume from checkpoint
+        :param mcp_context_enabled: enable/disable MCP context enrichment hook
+        :param mcp_context_command: shell command used to retrieve MCP context JSON
+        :param mcp_context_timeout_sec: timeout for MCP context command
+        :param mcp_context_max_chars: max context chars after MCP enrichment merge
         """
         # load .env values first so env-backed config is available during env setup
         load_env_file()
@@ -198,6 +207,16 @@ class Voyager:
             os.getenv("VOYAGER_RESTORE_POSITION_AFTER_FAILURE", "0").strip().lower()
             not in {"0", "false", "no", "off"}
         )
+        self.mcp_context_bridge = MCPContextBridge(
+            enabled=mcp_context_enabled,
+            command=mcp_context_command,
+            timeout_sec=mcp_context_timeout_sec,
+            max_context_chars=mcp_context_max_chars,
+        )
+        if self.mcp_context_bridge.ready:
+            print(
+                f"\033[36mMCP context bridge enabled via command: {self.mcp_context_bridge.command}\033[0m"
+            )
 
     @staticmethod
     def _latest_observation_from_events(events):
@@ -231,13 +250,19 @@ class Voyager:
             "bot.chat(`/time set ${getNextTime()}`);\n"
             + f"bot.chat('/difficulty {difficulty}');"
         )
+        self.task, self.context = self._enrich_task_context_with_mcp(
+            task=self.task,
+            context=self.context,
+            events=events,
+            phase="reset",
+        )
         skills = self.skill_manager.retrieve_skills(query=self.context)
         print(
             f"\033[33mRender Action Agent system message with {len(skills)} skills\033[0m"
         )
         system_message = self.action_agent.render_system_message(skills=skills)
         human_message = self.action_agent.render_human_message(
-            events=events, code="", task=self.task, context=context, critique=""
+            events=events, code="", task=self.task, context=self.context, critique=""
         )
         self.messages = [system_message, human_message]
         print(
@@ -246,6 +271,30 @@ class Voyager:
         assert len(self.messages) == 2
         self.conversations = []
         return self.messages
+
+    def _enrich_task_context_with_mcp(self, *, task, context, events, phase):
+        try:
+            observation = self._latest_observation_from_events(events)
+        except Exception:
+            observation = {}
+        enrichment = self.mcp_context_bridge.enrich_task_context(
+            task=task,
+            context=context,
+            observation=observation,
+            completed_tasks=self.curriculum_agent.completed_tasks,
+            failed_tasks=self.curriculum_agent.failed_tasks,
+            phase=phase,
+        )
+        if enrichment.get("used"):
+            source = enrichment.get("source") or "mcp"
+            print(
+                f"\033[36mApplied MCP context enrichment ({source}) for task '{enrichment['task']}'.\033[0m"
+            )
+        elif enrichment.get("error") and self.mcp_context_bridge.enabled:
+            print(
+                f"\033[33mMCP context enrichment skipped due to error: {enrichment['error']}\033[0m"
+            )
+        return enrichment["task"], enrichment["context"]
 
     def close(self):
         self.env.close()

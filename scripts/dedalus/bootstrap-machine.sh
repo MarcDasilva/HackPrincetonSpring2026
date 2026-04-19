@@ -6,6 +6,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SCRIPT_DIR/common.sh"
 
 install_system_packages() {
+  if [[ "${DEDALUS_SKIP_APT:-0}" == "1" ]]; then
+    echo "Skipping apt package installation because DEDALUS_SKIP_APT=1."
+    return 0
+  fi
+
   local needs_apt=0
   for binary in curl git python3 tar xz; do
     if ! command -v "$binary" >/dev/null 2>&1; then
@@ -38,7 +43,7 @@ install_system_packages() {
 }
 
 install_local_node() {
-  local platform arch target_dir archive url
+  local platform arch target_dir archive url archive_ext
   platform="$(uname -s | tr '[:upper:]' '[:lower:]')"
 
   case "$(uname -m)" in
@@ -55,22 +60,45 @@ install_local_node() {
   esac
 
   target_dir="$DEDALUS_HOME/.local/node-v$NODE_VERSION-$platform-$arch"
-  archive="$DEDALUS_HOME/.cache/node-v$NODE_VERSION-$platform-$arch.tar.xz"
-  url="https://nodejs.org/dist/v$NODE_VERSION/node-v$NODE_VERSION-$platform-$arch.tar.xz"
+  archive_ext="tar.xz"
+  if ! command -v xz >/dev/null 2>&1; then
+    archive_ext="tar.gz"
+  fi
+
+  archive="$DEDALUS_HOME/.cache/node-v$NODE_VERSION-$platform-$arch.$archive_ext"
+  url="https://nodejs.org/dist/v$NODE_VERSION/node-v$NODE_VERSION-$platform-$arch.$archive_ext"
 
   if [[ ! -x "$target_dir/bin/node" ]]; then
     curl -fsSL "$url" -o "$archive"
     rm -rf "$target_dir"
-    tar -xJf "$archive" -C "$DEDALUS_HOME/.local"
+    if [[ "$archive_ext" == "tar.xz" ]]; then
+      tar -xJf "$archive" -C "$DEDALUS_HOME/.local"
+    else
+      tar -xzf "$archive" -C "$DEDALUS_HOME/.local"
+    fi
   fi
 
   ln -sfn "$target_dir" "$LOCAL_NODE_DIR"
   export PATH="$LOCAL_NODE_DIR/bin:$PATH"
 }
 
+create_virtualenv_with_pyz() {
+  local virtualenv_pyz
+  virtualenv_pyz="$DEDALUS_HOME/.cache/virtualenv.pyz"
+  curl -fsSL "https://bootstrap.pypa.io/virtualenv.pyz" -o "$virtualenv_pyz"
+  python3 "$virtualenv_pyz" "$VENV_DIR"
+}
+
 install_python_env() {
-  if [[ ! -d "$VENV_DIR" ]]; then
-    python3 -m venv "$VENV_DIR"
+  if [[ ! -x "$VENV_DIR/bin/python" || ! -f "$VENV_DIR/bin/activate" || ! -x "$VENV_DIR/bin/pip" ]]; then
+    rm -rf "$VENV_DIR"
+    python3 -m venv "$VENV_DIR" || true
+
+    if [[ ! -f "$VENV_DIR/bin/activate" || ! -x "$VENV_DIR/bin/pip" ]]; then
+      echo "python3 -m venv failed; falling back to virtualenv bootstrap."
+      rm -rf "$VENV_DIR"
+      create_virtualenv_with_pyz
+    fi
   fi
 
   # shellcheck disable=SC1090

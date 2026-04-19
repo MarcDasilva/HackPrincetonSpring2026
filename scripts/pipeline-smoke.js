@@ -3,11 +3,14 @@ import net from "net";
 import os from "os";
 import path from "path";
 import { spawn } from "child_process";
+import { fileURLToPath } from "url";
 import dotenv from "dotenv";
 
 dotenv.config();
 
-const REPO_ROOT = "/Users/marc/Voyager-1";
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const REPO_ROOT = process.env.VOYAGER_PATH || path.resolve(__dirname, "..");
 const MC_HOST = process.env.VOYAGER_MC_HOST || "127.0.0.1";
 const MC_PORT = parseInt(process.env.VOYAGER_MC_PORT || "25565", 10);
 const BASE_SERVER_PORT = parseInt(process.env.VOYAGER_SERVER_PORT || "3000", 10);

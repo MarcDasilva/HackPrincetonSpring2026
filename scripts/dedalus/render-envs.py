@@ -22,6 +22,7 @@ APP_ENV_KEYS = [
     "VOYAGER_MC_PASSWORD",
     "VOYAGER_MC_PROFILES_DIR",
     "VOYAGER_PATH",
+    "VOYAGER_ORCHESTRATION_BACKEND",
     "IMESSAGE_BOT_ID",
     "PHOTON_PROJECT_ID",
     "PHOTON_PROJECT_SECRET",
@@ -101,8 +102,16 @@ def coerce_machine_paths(values: dict[str, str], app_home: str, orchestrator_hom
     if not openclaw_path or openclaw_path.startswith("/opt/") or openclaw_path.startswith("/Users/"):
         result["OPENCLAW_ORCHESTRATOR_PATH"] = orchestrator_home
 
+    backend = (result.get("VOYAGER_ORCHESTRATION_BACKEND") or "").strip().lower()
+    if backend not in {"local", "openclaw", "dedalus"}:
+        backend = "local"
+    result["VOYAGER_ORCHESTRATION_BACKEND"] = "openclaw" if backend in {"openclaw", "dedalus"} else "local"
+
     result["OPENCLAW_ORCHESTRATOR_ENV_FILE"] = f"{orchestrator_home}/.env"
-    result["OPENCLAW_COMMAND"] = f"node {app_home}/scripts/photon-stdin-bridge.mjs"
+    if result["VOYAGER_ORCHESTRATION_BACKEND"] == "openclaw":
+        result["OPENCLAW_COMMAND"] = f"node {app_home}/scripts/photon-stdin-bridge.mjs"
+    else:
+        result.pop("OPENCLAW_COMMAND", None)
     result["PHOTON_TRACKING_DIR"] = "/home/machine/photon-progress"
     return result
 
@@ -129,13 +138,13 @@ def main() -> None:
 
     app_defaults = {
         "VOYAGER_PATH": app_home,
+        "VOYAGER_ORCHESTRATION_BACKEND": "local",
         "PHOTON_TRACKING_DIR": "/home/machine/photon-progress",
         "OPENCLAW_ORCHESTRATOR_PATH": orchestrator_home,
         "OPENCLAW_ORCHESTRATOR_ENV_FILE": f"{orchestrator_home}/.env",
         "OPENCLAW_FOREMAN_MATCH": "node src/services/run-foreman.js",
         "OPENCLAW_WORKER_IDS": "worker-miner worker-builder",
         "OPENCLAW_GATEWAY_ENV_FILE": "/home/machine/openclaw-gateways/openclaw-gateway.env",
-        "OPENCLAW_COMMAND": f"node {app_home}/scripts/photon-stdin-bridge.mjs",
     }
 
     openclaw_defaults = {

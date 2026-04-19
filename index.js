@@ -1,11 +1,13 @@
 /**
- * Photon iMessage local orchestrator.
+ * Photon iMessage orchestrator.
  *
  * Flow:
  * 1. Photon receives a user request.
- * 2. OpenAI proposes a local bot orchestration plan and asks for approval.
- * 3. If approved, a central orchestrator starts local Voyager bot workers.
- * 4. Worker progress is tracked locally and mirrored to Supabase shared memory.
+ * 2. OpenAI proposes an agent plan and asks for approval.
+ * 3. If approved, Photon launches either:
+ *    - local Voyager workers, or
+ *    - an OpenClaw handoff (Dedalus/OpenClaw backend).
+ * 4. Progress is tracked locally and mirrored to Supabase shared memory.
  */
 
 import { createRequire } from "module";
@@ -82,6 +84,13 @@ function resolveVoyagerPath() {
   return configured || fallback;
 }
 
+function resolveOrchestrationBackend({ configured, hasOpenClawCommand }) {
+  const normalized = `${configured || ""}`.trim().toLowerCase();
+  if (normalized === "openclaw" || normalized === "dedalus") return "openclaw";
+  if (normalized === "local") return "local";
+  return hasOpenClawCommand ? "openclaw" : "local";
+}
+
 function getPhotonCredentials() {
   const projectId = process.env.PHOTON_PROJECT_ID || process.env.PROJECT_ID;
   const projectSecret =
@@ -132,7 +141,8 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4.1-mini";
 const OPENAI_EMBEDDING_MODEL =
   process.env.OPENAI_EMBEDDING_MODEL || "text-embedding-3-small";
-const VOYAGER_PATH = "/Users/marc/Voyager-1";
+const OPENCLAW_COMMAND = process.env.OPENCLAW_COMMAND || "";
+const VOYAGER_PATH = resolveVoyagerPath();
 const MC_HOST = process.env.VOYAGER_MC_HOST || "127.0.0.1";
 const MC_PORT = parseInt(process.env.VOYAGER_MC_PORT || "25565", 10);
 const BASE_SERVER_PORT = parseInt(process.env.VOYAGER_SERVER_PORT || "3000", 10);
@@ -193,6 +203,11 @@ const VOYAGER_SKIP_DECOMPOSE_FOR_MULTI_AGENT =
   `${process.env.VOYAGER_SKIP_DECOMPOSE_FOR_MULTI_AGENT || "1"}` !== "0";
 const VOYAGER_RESET_ENV_BETWEEN_SUBGOALS =
   `${process.env.VOYAGER_RESET_ENV_BETWEEN_SUBGOALS || "0"}` !== "0";
+const ORCHESTRATION_BACKEND = resolveOrchestrationBackend({
+  configured: process.env.VOYAGER_ORCHESTRATION_BACKEND,
+  hasOpenClawCommand: Boolean(OPENCLAW_COMMAND),
+});
+const USE_OPENCLAW_BACKEND = ORCHESTRATION_BACKEND === "openclaw";
 
 const pendingApprovals = new Map();
 const activeRuns = new Map();
@@ -534,7 +549,7 @@ function parseNaturalMemoryLogCommand(text) {
 }
 
 const HELP_TEXT = [
-  "Photon local orchestration commands:",
+  `Photon ${USE_OPENCLAW_BACKEND ? "OpenClaw/Dedalus" : "local"} orchestration commands:`,
   "/status — show pending draft and active runs for this chat",
   "/status RUN_ID — show details for one run",
   "/approve — launch the current draft",
@@ -549,7 +564,7 @@ const HELP_TEXT = [
   "",
   "Normal flow:",
   "1. Send a task.",
-  "2. Photon proposes a local multi-bot plan.",
+  "2. Photon proposes Task + Agents.",
   "3. Reply YES to launch, or reply with edits to revise the plan.",
 ].join("\n");
 
@@ -2846,6 +2861,7 @@ function serializeProposalSummary(state) {
 function serializeRunSummary(run) {
   return {
     run_id: run.id,
+    backend: run.backend || "local",
     status: run.status,
     task: run.task,
     agent_count: run.agentCount,
@@ -3097,7 +3113,9 @@ function normalizeProposal(raw, context) {
     intent:
       typeof raw?.intent === "string" && raw.intent.trim()
         ? raw.intent.trim()
-        : "start_local_bot_agents",
+        : USE_OPENCLAW_BACKEND
+          ? "start_ai_agents"
+          : "start_local_bot_agents",
     task,
     objective:
       typeof raw?.objective === "string" && raw.objective.trim()
@@ -3113,13 +3131,15 @@ function normalizeProposal(raw, context) {
     reasoning_summary:
       typeof raw?.reasoning_summary === "string" && raw.reasoning_summary.trim()
         ? raw.reasoning_summary.trim()
-        : "Prepared a local multi-bot orchestration plan.",
+        : USE_OPENCLAW_BACKEND
+          ? "Prepared an OpenClaw handoff plan."
+          : "Prepared a local multi-bot orchestration plan.",
     approval_prompt:
       typeof raw?.approval_prompt === "string" && raw.approval_prompt.trim()
         ? raw.approval_prompt.trim()
-        : "Reply YES to launch this plan locally, or tell me what to change.",
+        : "Reply YES to launch, or tell me what to change.",
     handoff: {
-      target: "local_voyager_orchestrator",
+      target: USE_OPENCLAW_BACKEND ? "openclaw" : "local_voyager_orchestrator",
       mode: startAgentOrchestration ? "orchestrate" : "ignore",
       task,
       constraints,
@@ -3152,10 +3172,17 @@ async function requestOrchestrationProposal({
     limit: SUPABASE_MEMORY_SEARCH_LIMIT,
   });
   const memoryContextForPrompt = summarizeMemoryContextForProposal(memoryContext);
+  const handoffTarget = USE_OPENCLAW_BACKEND ? "openclaw" : "local_voyager_orchestrator";
+  const plannerIntro = USE_OPENCLAW_BACKEND
+    ? "You are the planning layer for a Photon iMessage orchestrator that delegates work to OpenClaw agents running on a Dedalus machine."
+    : "You are the planning layer for a local Photon iMessage orchestrator.";
+  const executionLine = USE_OPENCLAW_BACKEND
+    ? "Your output drives OpenClaw handoff payloads, not direct local Python worker launches."
+    : "Your output drives local Voyager Minecraft bots, no VM and no remote handoff.";
 
   const systemPrompt = [
-    "You are the planning layer for a local Photon iMessage orchestrator.",
-    "Your output drives local Voyager Minecraft bots, no VM and no remote handoff.",
+    plannerIntro,
+    executionLine,
     "Analyze the request and return launch-ready JSON only.",
     "Photon must ask explicit user approval before launch. Do not assume approval.",
     "Use short concrete assignments that map to runnable bot actions.",
@@ -3194,7 +3221,7 @@ async function requestOrchestrationProposal({
     '  "reasoning_summary": string,',
     '  "approval_prompt": string,',
     '  "handoff": {',
-    '    "target": "local_voyager_orchestrator",',
+    `    "target": "${handoffTarget}",`,
     '    "mode": "orchestrate" | "ignore",',
     '    "task": string | null,',
     '    "constraints": string[],',
@@ -3284,6 +3311,7 @@ function serializeRun(run) {
   return {
     run_id: run.id,
     proposal_id: run.proposalId,
+    backend: run.backend || "local",
     status: run.status,
     created_at: run.createdAt,
     updated_at: run.updatedAt,
@@ -3299,6 +3327,8 @@ function serializeRun(run) {
     agent_roles: run.agentRoles,
     agent_assignments: run.agentAssignments,
     latest_message: run.latestMessage,
+    pid: run.pid,
+    exit_code: run.exitCode,
     cancel_requested: run.cancelRequested,
     finalized: run.finalized,
     tracking_path: toRelativeTrackingPath(run.filePath),
@@ -3469,6 +3499,7 @@ function buildRunView(run, { includeEvents = false } = {}) {
   const limitedEvents = includeEvents ? events.slice(-DASHBOARD_EVENT_LIMIT) : events.slice(-25);
   return {
     id: run.id,
+    backend: run.backend || "local",
     proposal_id: run.proposalId,
     status: run.status,
     created_at: run.createdAt,
@@ -3484,6 +3515,8 @@ function buildRunView(run, { includeEvents = false } = {}) {
     cancel_requested: Boolean(run.cancelRequested),
     finalized: Boolean(run.finalized),
     latest_message: run.latestMessage || null,
+    pid: run.pid || null,
+    exit_code: typeof run.exitCode === "number" ? run.exitCode : null,
     tracking_path: toRelativeTrackingPath(run.filePath),
     tracking_absolute_path: run.filePath,
     agent_count: run.agentCount || agents.length,
@@ -3518,6 +3551,8 @@ function buildSystemView() {
       mc_host: MC_HOST,
       mc_port: MC_PORT,
       base_server_port: BASE_SERVER_PORT,
+      orchestration_backend: ORCHESTRATION_BACKEND,
+      openclaw_command_configured: Boolean(OPENCLAW_COMMAND),
     },
     dashboard: {
       host: DASHBOARD_HOST,
@@ -3599,6 +3634,14 @@ function requestRunCancellation(run, { source = "photon" } = {}) {
     data: { source },
   });
 
+  if (run.child) {
+    try {
+      run.child.kill("SIGTERM");
+    } catch (error) {
+      console.error(`Failed to SIGTERM OpenClaw child: ${error.message}`);
+    }
+  }
+
   const children = Object.values(run.children || {});
   for (const child of children) {
     try {
@@ -3609,6 +3652,13 @@ function requestRunCancellation(run, { source = "photon" } = {}) {
   }
 
   setTimeout(() => {
+    if (run.child) {
+      try {
+        run.child.kill("SIGKILL");
+      } catch (error) {
+        console.error(`Failed to SIGKILL OpenClaw child: ${error.message}`);
+      }
+    }
     for (const child of Object.values(run.children || {})) {
       try {
         child.kill("SIGKILL");
@@ -4078,6 +4128,7 @@ function formatProposalMessage(state) {
 function formatRunStatus(run, { detailed = false } = {}) {
   const lines = [
     `Run ${run.id}`,
+    `Backend: ${run.backend || "local"}`,
     `Status: ${run.status}`,
     `Task: ${run.task || "unspecified"}`,
     `Agents: ${run.agentCount || 1}`,
@@ -4087,6 +4138,9 @@ function formatRunStatus(run, { detailed = false } = {}) {
 
   if (run.latestMessage) {
     lines.push(`Latest: ${truncate(run.latestMessage, 220)}`);
+  }
+  if (Number.isInteger(run.pid) && run.pid > 0) {
+    lines.push(`PID: ${run.pid}`);
   }
 
   if (detailed) {
@@ -4157,7 +4211,8 @@ function createRunFromProposal(state) {
   const run = {
     id: runId,
     proposalId: state.id,
-    status: "starting",
+    backend: USE_OPENCLAW_BACKEND ? "openclaw" : "local",
+    status: USE_OPENCLAW_BACKEND ? (OPENCLAW_COMMAND ? "starting" : "logged") : "starting",
     createdAt: nowIso(),
     updatedAt: nowIso(),
     startedAt: null,
@@ -4172,10 +4227,15 @@ function createRunFromProposal(state) {
     agentRoles: state.proposal.agent_roles,
     agentAssignments: state.proposal.agent_assignments,
     latestMessage: null,
+    pid: null,
+    exitCode: null,
     cancelRequested: false,
     finalized: false,
+    stdoutBuffer: "",
+    stderrBuffer: "",
     events: [],
     payload: null,
+    child: null,
     children: {},
     filePath: path.join(RUNS_DIR, `${runId}.json`),
   };
@@ -4184,7 +4244,9 @@ function createRunFromProposal(state) {
   registerRunForSpace(state.spaceId, runId);
   recordRunEvent(run, {
     type: "plan-approved",
-    message: "User approved the local orchestration plan.",
+    message: USE_OPENCLAW_BACKEND
+      ? "User approved the OpenClaw handoff plan."
+      : "User approved the local orchestration plan.",
   });
   persistRun(run);
   return run;
@@ -4249,7 +4311,7 @@ function buildAgentOverrideProposal({ role, task, senderId, spaceId, assignmentI
 
   return {
     start_agent_orchestration: Boolean(normalizedTask),
-    intent: "start_local_bot_agents",
+    intent: USE_OPENCLAW_BACKEND ? "start_ai_agents" : "start_local_bot_agents",
     task: normalizedTask || null,
     objective: normalizedTask || null,
     agent_count: 1,
@@ -4262,7 +4324,7 @@ function buildAgentOverrideProposal({ role, task, senderId, spaceId, assignmentI
     reasoning_summary: `Applied explicit agent override: ${forcedRole}.`,
     approval_prompt: "Reply YES to launch this override, or tell me what to change.",
     handoff: {
-      target: "local_voyager_orchestrator",
+      target: USE_OPENCLAW_BACKEND ? "openclaw" : "local_voyager_orchestrator",
       mode: normalizedTask ? "orchestrate" : "ignore",
       task: normalizedTask || null,
       constraints,
@@ -4338,7 +4400,7 @@ function isLikelyBotEcho({ spaceId, text, windowMs = 120000 }) {
   return typeof previous === "number" && now - previous < windowMs;
 }
 
-function finalizeRun(run, { status, errorMessage = null } = {}) {
+function finalizeLocalRun(run, { status, errorMessage = null } = {}) {
   if (run.finalized) return;
 
   run.finalized = true;
@@ -4371,6 +4433,200 @@ function finalizeRun(run, { status, errorMessage = null } = {}) {
   persistRun(run);
 }
 
+function parseProgressLine(line) {
+  try {
+    const parsed = JSON.parse(line);
+    if (parsed && typeof parsed === "object") {
+      return parsed;
+    }
+  } catch (error) {
+    // Non-JSON progress lines are still useful.
+  }
+  return null;
+}
+
+function ingestRunLine(run, stream, line) {
+  if (!line.trim()) return;
+  console.log(`[OpenClaw ${run.id} ${stream}] ${line}`);
+
+  const parsed = parseProgressLine(line);
+  if (parsed?.state && typeof parsed.state === "string") {
+    run.status = parsed.state;
+  }
+
+  recordRunEvent(run, {
+    type: parsed?.type || "log",
+    stream,
+    agent: parsed?.agent || parsed?.role || null,
+    role: parsed?.role || null,
+    message:
+      parsed?.message ||
+      parsed?.summary ||
+      parsed?.status ||
+      parsed?.state ||
+      line,
+    raw: line,
+    data: parsed,
+  });
+}
+
+function consumeBufferedLines(run, stream, chunk) {
+  const bufferKey = stream === "stdout" ? "stdoutBuffer" : "stderrBuffer";
+  run[bufferKey] += chunk.toString();
+  const lines = run[bufferKey].split(/\r?\n/);
+  run[bufferKey] = lines.pop() || "";
+  for (const line of lines) {
+    ingestRunLine(run, stream, line);
+  }
+}
+
+function flushRemainingBuffer(run, stream) {
+  const bufferKey = stream === "stdout" ? "stdoutBuffer" : "stderrBuffer";
+  const remaining = run[bufferKey].trim();
+  if (remaining) ingestRunLine(run, stream, remaining);
+  run[bufferKey] = "";
+}
+
+function finalizeOpenClawRun(run, code, errorMessage = null) {
+  if (run.finalized) return false;
+
+  run.finalized = true;
+  flushRemainingBuffer(run, "stdout");
+  flushRemainingBuffer(run, "stderr");
+  run.exitCode = typeof code === "number" ? code : run.exitCode;
+  run.endedAt = nowIso();
+
+  if (run.cancelRequested) {
+    run.status = "cancelled";
+    recordRunEvent(run, {
+      type: "cancelled",
+      message: "Run was cancelled from Photon.",
+    });
+  } else if (errorMessage) {
+    run.status = "failed";
+    recordRunEvent(run, {
+      type: "error",
+      message: errorMessage,
+    });
+  } else if (run.status === "completed") {
+    run.status = "completed";
+    recordRunEvent(run, {
+      type: "completed",
+      message: "OpenClaw run completed successfully.",
+    });
+  } else if (code === 0) {
+    const queued = run.events.some(
+      (event) =>
+        event.type === "bridge.enqueued" ||
+        event.data?.state === "queued" ||
+        event.type === "queued"
+    );
+    if (queued) {
+      run.status = "queued";
+      recordRunEvent(run, {
+        type: "queued",
+        message: "OpenClaw accepted the handoff and queued downstream agent work.",
+      });
+    } else {
+      run.status = "completed";
+      recordRunEvent(run, {
+        type: "completed",
+        message: "OpenClaw run completed successfully.",
+      });
+    }
+  } else {
+    run.status = "failed";
+    recordRunEvent(run, {
+      type: "failed",
+      message: `OpenClaw process exited with code ${code}.`,
+    });
+  }
+
+  run.child = null;
+  activeRuns.delete(run.id);
+  persistRun(run);
+  return true;
+}
+
+function launchOpenClawRun(run, proposalState, space) {
+  run.payload = buildLaunchPayload(proposalState, run);
+  run.startedAt = nowIso();
+
+  recordRunEvent(run, {
+    type: "launch",
+    message: OPENCLAW_COMMAND
+      ? "OpenClaw launch requested."
+      : "OPENCLAW_COMMAND not configured. Payload logged only.",
+  });
+  persistRun(run);
+
+  if (!OPENCLAW_COMMAND) {
+    console.log("📝 OPENCLAW_COMMAND not set. Handoff payload:");
+    console.log(JSON.stringify(run.payload, null, 2));
+    run.status = "logged";
+    recordRunEvent(run, {
+      type: "logged",
+      message: "Run approved and written to tracking files, but not executed.",
+    });
+    persistRun(run);
+    return;
+  }
+
+  const serialized = JSON.stringify(run.payload, null, 2);
+
+  try {
+    const child = spawn(OPENCLAW_COMMAND, {
+      shell: true,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+
+    run.child = child;
+    run.pid = child.pid ?? null;
+    run.status = "running";
+    activeRuns.set(run.id, run);
+    recordRunEvent(run, {
+      type: "process-started",
+      message: run.pid
+        ? `OpenClaw process started with pid ${run.pid}.`
+        : "OpenClaw process started.",
+    });
+    persistRun(run);
+
+    child.stdout.on("data", (chunk) => consumeBufferedLines(run, "stdout", chunk));
+    child.stderr.on("data", (chunk) => consumeBufferedLines(run, "stderr", chunk));
+
+    child.on("error", async (error) => {
+      const didFinalize = finalizeOpenClawRun(
+        run,
+        null,
+        `OpenClaw failed to start: ${error.message}`
+      );
+      if (!didFinalize) return;
+      await safeSend(space, `Run ${run.id} failed to start.`);
+    });
+
+    child.on("close", async (code) => {
+      const didFinalize = finalizeOpenClawRun(run, code);
+      if (!didFinalize) return;
+      await safeSend(
+        space,
+        [
+          `Run ${run.id} ${run.status}.`,
+          run.latestMessage ? `Latest: ${truncate(run.latestMessage, 180)}` : null,
+        ]
+          .filter(Boolean)
+          .join("\n")
+      );
+    });
+
+    child.stdin.write(serialized);
+    child.stdin.end();
+  } catch (error) {
+    finalizeOpenClawRun(run, null, `OpenClaw failed to start: ${error.message}`);
+    throw error;
+  }
+}
+
 function launchLocalRun(run, proposalState, space) {
   run.payload = buildLaunchPayload(proposalState, run);
   run.startedAt = nowIso();
@@ -4387,12 +4643,12 @@ function launchLocalRun(run, proposalState, space) {
   (async () => {
     try {
       await orchestrator.runPlan(run.agentAssignments);
-      finalizeRun(run, { status: "completed" });
+      finalizeLocalRun(run, { status: "completed" });
     } catch (error) {
       if (run.cancelRequested) {
-        finalizeRun(run, { status: "cancelled" });
+        finalizeLocalRun(run, { status: "cancelled" });
       } else {
-        finalizeRun(run, { status: "failed", errorMessage: error.message });
+        finalizeLocalRun(run, { status: "failed", errorMessage: error.message });
       }
     }
 
@@ -4411,8 +4667,16 @@ function launchLocalRun(run, proposalState, space) {
         .join("\n")
     );
   })().catch((error) => {
-    finalizeRun(run, { status: "failed", errorMessage: error.message });
+    finalizeLocalRun(run, { status: "failed", errorMessage: error.message });
   });
+}
+
+function launchRun(run, proposalState, space) {
+  if (USE_OPENCLAW_BACKEND) {
+    launchOpenClawRun(run, proposalState, space);
+    return;
+  }
+  launchLocalRun(run, proposalState, space);
 }
 
 async function proposeNewPlan({ text, senderId, spaceId, space }) {
@@ -4618,12 +4882,18 @@ async function approvePendingPlan({ state, space, spaceId }) {
   pendingApprovals.delete(spaceId);
 
   const run = createRunFromProposal(state);
-  launchLocalRun(run, state, space);
+  launchRun(run, state, space);
+
+  const launchMessage = USE_OPENCLAW_BACKEND
+    ? OPENCLAW_COMMAND
+      ? `Launching OpenClaw handoff for run ${run.id}.`
+      : `OPENCLAW_COMMAND is not configured; run ${run.id} was logged only.`
+    : `Launching run ${run.id}.`;
 
   await safeSend(
     space,
     [
-      `Launching run ${run.id}.`,
+      launchMessage,
       "Use /status if you want progress.",
     ].join("\n")
   );
@@ -4900,13 +5170,21 @@ async function main() {
   acquireProcessLock();
   startDashboardServer();
 
-  if (!isVoyagerRepoRoot(VOYAGER_PATH)) {
+  if (!USE_OPENCLAW_BACKEND && !isVoyagerRepoRoot(VOYAGER_PATH)) {
     throw new Error(
       `VOYAGER_PATH is invalid: ${VOYAGER_PATH}. Set VOYAGER_PATH to the repository root containing voyager/__init__.py.`
     );
   }
 
-  console.log("🚀 Starting Photon local iMessage orchestrator...");
+  if (USE_OPENCLAW_BACKEND && !OPENCLAW_COMMAND) {
+    console.warn(
+      "⚠️ OpenClaw backend selected, but OPENCLAW_COMMAND is empty. Approved runs will be logged only."
+    );
+  }
+
+  console.log(
+    `🚀 Starting Photon iMessage orchestrator (${USE_OPENCLAW_BACKEND ? "openclaw/dedalus" : "local"})...`
+  );
 
   const photon = getPhotonCredentials();
   const app = await Spectrum(
@@ -4928,12 +5206,21 @@ async function main() {
   );
   console.log(`🤖 OpenAI planning model: ${OPENAI_MODEL}`);
   console.log(`🧩 OpenAI embedding model: ${OPENAI_EMBEDDING_MODEL}`);
-  console.log(`🧠 Local orchestrator target: ${VOYAGER_PATH}`);
-  console.log(`🐍 Python binary: ${PYTHON_BIN}`);
-  console.log(`🎮 Minecraft target: ${MC_HOST}:${MC_PORT} (base bot server port ${BASE_SERVER_PORT})`);
-  console.log(
-    `🛠️  Multi-agent startup: stagger=${AGENT_START_STAGGER_MS}ms, skip_decompose_multi=${VOYAGER_SKIP_DECOMPOSE_FOR_MULTI_AGENT}, decompose_timeout=${VOYAGER_DECOMPOSE_TIMEOUT_SEC}s, env_request_timeout=${VOYAGER_ENV_REQUEST_TIMEOUT}s, reset_env_between_subgoals=${VOYAGER_RESET_ENV_BETWEEN_SUBGOALS}`
-  );
+  if (USE_OPENCLAW_BACKEND) {
+    console.log(`🔀 Backend: OpenClaw handoff`);
+    console.log(
+      OPENCLAW_COMMAND
+        ? `🔧 OPENCLAW_COMMAND: ${OPENCLAW_COMMAND}`
+        : "🔧 OPENCLAW_COMMAND: not set (logged-only mode)"
+    );
+  } else {
+    console.log(`🧠 Local orchestrator target: ${VOYAGER_PATH}`);
+    console.log(`🐍 Python binary: ${PYTHON_BIN}`);
+    console.log(`🎮 Minecraft target: ${MC_HOST}:${MC_PORT} (base bot server port ${BASE_SERVER_PORT})`);
+    console.log(
+      `🛠️  Multi-agent startup: stagger=${AGENT_START_STAGGER_MS}ms, skip_decompose_multi=${VOYAGER_SKIP_DECOMPOSE_FOR_MULTI_AGENT}, decompose_timeout=${VOYAGER_DECOMPOSE_TIMEOUT_SEC}s, env_request_timeout=${VOYAGER_ENV_REQUEST_TIMEOUT}s, reset_env_between_subgoals=${VOYAGER_RESET_ENV_BETWEEN_SUBGOALS}`
+    );
+  }
   const memoryStatusLabel = sharedMemoryStore.enabled
     ? "enabled"
     : sharedMemoryStore.disabledByFlag
@@ -5061,7 +5348,7 @@ async function main() {
           console.log(`   Attachment: ${message.content.name} (${bytes.length} bytes)`);
           await safeSend(
             space,
-            `Received your file: ${message.content.name}\nSend a task when you're ready and I'll propose a local orchestration plan.`
+            `Received your file: ${message.content.name}\nSend a task when you're ready and I'll propose Task + Agents.`
           );
           break;
         }
@@ -5101,6 +5388,13 @@ process.on("SIGINT", () => {
   console.log("\n👋 Shutting down...");
   for (const run of activeRuns.values()) {
     run.cancelRequested = true;
+    if (run.child) {
+      try {
+        run.child.kill("SIGTERM");
+      } catch (error) {
+        console.error(`Failed to stop OpenClaw process: ${error.message}`);
+      }
+    }
     for (const child of Object.values(run.children || {})) {
       try {
         child.kill("SIGTERM");
