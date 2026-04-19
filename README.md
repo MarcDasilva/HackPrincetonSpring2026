@@ -22,19 +22,28 @@ Every action an agent takes feeds back into the shared state, so the other two a
 User
   |
   v
-Group Chat (chat_messages table, realtime)
+iMessage Group Chat
   |
   v
 Orchestrator
   |
-  +---> Agent 1: Miner ---+
-  +---> Agent 2: Crafter --+--> Supabase (world state, jobs, memory)
-  +---> Agent 3: Scout ----+         |
-                                     +--> pgvector RAG (agent directives)
-                                     +--> Redis (distributed job locking)
-                                     |
-                                     v
-                                  Voyager (Minecraft execution)
+  +--> Agent 1: Miner
+  +--> Agent 2: Crafter
+  +--> Agent 3: Scout
+          |
+          v
+     Supabase
+     - chat messages
+     - world state
+     - jobs
+     - shared memory
+          |
+          +--> pgvector RAG for agent directives
+          +--> Redis for distributed job locking
+          |
+          v
+     Voyager
+     - Minecraft execution
 ```
 
 ### Supabase (Shared Brain)
