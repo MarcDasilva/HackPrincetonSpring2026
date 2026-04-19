@@ -2,6 +2,9 @@
 
 Voyager-1 is a hybrid project that connects iMessage conversations to real Minecraft execution through Voyager bots.
 
+![Voyager-1 Preview](thumbnail.png)
+
+
 This repository combines:
 - A Photon/Spectrum iMessage orchestrator with approval-first planning (`index.js`)
 - Local multi-agent Voyager execution in Python (`voyager/`)
