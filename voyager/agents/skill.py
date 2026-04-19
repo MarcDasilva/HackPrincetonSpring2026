@@ -32,9 +32,14 @@ class SkillManager:
         U.f_mkdir(f"{ckpt_dir}/skill/vectordb")
         # programs for env execution
         self.control_primitives = load_control_primitives()
+        skills_path = f"{ckpt_dir}/skill/skills.json"
         if resume:
             print(f"\033[33mLoading Skill Manager from {ckpt_dir}/skill\033[0m")
-            self.skills = U.load_json(f"{ckpt_dir}/skill/skills.json")
+            if U.f_exists(skills_path):
+                self.skills = U.load_json(skills_path)
+            else:
+                self.skills = {}
+                U.dump_json(self.skills, skills_path)
         else:
             self.skills = {}
         self.retrieval_top_k = retrieval_top_k

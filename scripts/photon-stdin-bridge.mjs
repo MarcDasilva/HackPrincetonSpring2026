@@ -150,7 +150,10 @@ function buildFallbackCommand(role) {
 }
 
 function buildCommand({ assignment, overallTask, index }) {
-  const task = normalizeText(assignment?.task, overallTask);
+  const assignmentTask = normalizeText(assignment?.task);
+  const fallbackTask = normalizeText(overallTask);
+  const task = assignmentTask || fallbackTask;
+  const contextText = normalizeText(assignmentTask, fallbackTask);
   const directRole = explicitRole(assignment?.role || "");
   const role = inferRole({
     role: assignment?.role || "",
@@ -174,9 +177,9 @@ function buildCommand({ assignment, overallTask, index }) {
         : index % 2 === 0
           ? "builder"
           : "miner";
-    return `@${worker} gather ${inferMaterialTarget(task)}`;
+    return `@${worker} gather ${inferMaterialTarget(contextText)}`;
   }
-  if (/\b(ore|iron|coal|mine)\b/.test(task)) return `@miner mine ${inferOreTarget(task)}`;
+  if (/\b(ore|iron|coal|mine)\b/.test(task)) return `@miner mine ${inferOreTarget(contextText)}`;
   if (/\b(food|farm|harvest|wheat|animal|hungry)\b/.test(task)) return "@forager gather food";
   if (/\b(wood|log|tree|lumber)\b/.test(task)) {
     const worker = role === "miner" ? "builder" : role;
