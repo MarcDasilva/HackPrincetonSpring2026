@@ -138,6 +138,17 @@ class VoyagerEnv(gym.Env):
         self.server_paused = False
         self.request_retry_count = int(os.getenv("VOYAGER_HTTP_RETRIES", "4"))
         self.request_retry_backoff = float(os.getenv("VOYAGER_HTTP_RETRY_BACKOFF_SEC", "1.0"))
+        self.start_request_timeout = float(
+            os.getenv("VOYAGER_START_REQUEST_TIMEOUT_SEC", "45.0")
+        )
+        self.start_retry_count = int(os.getenv("VOYAGER_START_RETRIES", "12"))
+        self.start_retry_backoff = float(os.getenv("VOYAGER_START_RETRY_BACKOFF_SEC", "2.0"))
+        self.start_throttle_wait = float(
+            os.getenv("VOYAGER_START_THROTTLE_WAIT_SEC", "20.0")
+        )
+        self.reset_restarts_mineflayer = (
+            os.getenv("VOYAGER_RESET_RESTART_MINEFLAYER", "0").strip() == "1"
+        )
 
     def get_mineflayer_process(self, server_port):
         U.f_mkdir(self.log_path, "mineflayer")
@@ -185,14 +196,14 @@ class VoyagerEnv(gym.Env):
             return None
 
         retry = 0
-        max_retries = 5
+        max_retries = max(1, self.start_retry_count)
         while retry < max_retries:
             print(self.mineflayer.ready_line)
             try:
                 res = requests.post(
                     f"{self.server}/start",
                     json=self.reset_options,
-                    timeout=self.request_timeout,
+                    timeout=self.start_request_timeout,
                 )
             except requests.exceptions.RequestException as exc:
                 self.connected = False
@@ -201,12 +212,14 @@ class VoyagerEnv(gym.Env):
                     raise RuntimeError(
                         f"Minecraft server start request failed after {max_retries} tries: {exc}"
                     ) from exc
+                wait_seconds = max(1.0, self.start_retry_backoff * retry)
                 print(
-                    f"Minecraft server start request failed ({exc}), retrying ({retry}/{max_retries - 1})..."
+                    f"Minecraft server start request failed ({exc}), retrying "
+                    f"({retry}/{max_retries - 1}) in {wait_seconds:.1f}s..."
                 )
-                self.mineflayer.stop()
-                time.sleep(1 + retry)
-                self.mineflayer.run()
+                if not self.mineflayer.is_running:
+                    self.mineflayer.run()
+                time.sleep(wait_seconds)
                 continue
             if res.status_code == 200:
                 self.connected = True
@@ -218,7 +231,6 @@ class VoyagerEnv(gym.Env):
             except Exception:
                 error_body = ""
             self.connected = False
-            self.mineflayer.stop()
             retry += 1
             if retry >= max_retries:
                 raise RuntimeError(
@@ -226,18 +238,26 @@ class VoyagerEnv(gym.Env):
                 )
             error_lower = str(error_body).lower()
             if "throttled" in error_lower or "please wait before reconnecting" in error_lower:
-                wait_seconds = 20
-                print(
-                    f"Minecraft server throttled reconnects; waiting {wait_seconds}s before retry ({retry}/{max_retries - 1})..."
+                wait_seconds = max(
+                    self.start_throttle_wait,
+                    self.start_throttle_wait + self.start_retry_backoff * (retry - 1),
                 )
+                print(
+                    f"Minecraft server throttled reconnects; waiting {wait_seconds:.1f}s "
+                    f"before retry ({retry}/{max_retries - 1})..."
+                )
+                if not self.mineflayer.is_running:
+                    self.mineflayer.run()
                 time.sleep(wait_seconds)
-                self.mineflayer.run()
                 continue
+            wait_seconds = max(1.0, self.start_retry_backoff * retry)
             print(
-                f"Minecraft server start failed ({res.status_code}), retrying ({retry}/{max_retries - 1})..."
+                f"Minecraft server start failed ({res.status_code}), retrying "
+                f"({retry}/{max_retries - 1}) in {wait_seconds:.1f}s..."
             )
-            time.sleep(2)
-            self.mineflayer.run()
+            if not self.mineflayer.is_running:
+                self.mineflayer.run()
+            time.sleep(wait_seconds)
 
     def _reconnect_bridge(self):
         self.connected = False
@@ -328,9 +348,12 @@ class VoyagerEnv(gym.Env):
             self.reset_options["profilesFolder"] = self.mc_profiles_dir
 
         self.unpause()
-        self.mineflayer.stop()
-        time.sleep(1)  # wait for mineflayer to exit
+        if self.reset_restarts_mineflayer and self.mineflayer.is_running:
+            self.mineflayer.stop()
+            time.sleep(1)  # wait for mineflayer to exit
 
+        # Force a /start handshake for each reset, but avoid process restarts by default.
+        self.connected = False
         returned_data = self.check_process()
         self.has_reset = True
         self.connected = True

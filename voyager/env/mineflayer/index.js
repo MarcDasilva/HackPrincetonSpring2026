@@ -17,6 +17,16 @@ const { plugin: tool } = require("mineflayer-tool");
 
 let bot = null;
 let keepAliveInterval = null;
+const EXTERNAL_TELEPORT_CANCEL_ENABLED =
+    `${process.env.VOYAGER_CANCEL_GOAL_ON_EXTERNAL_TELEPORT || "1"}` !== "0";
+const EXTERNAL_TELEPORT_HOLD_MS = Math.max(
+    0,
+    parseInt(process.env.VOYAGER_EXTERNAL_TELEPORT_HOLD_MS || "8000", 10)
+);
+const INTERNAL_TELEPORT_GRACE_MS = Math.max(
+    0,
+    parseInt(process.env.VOYAGER_INTERNAL_TELEPORT_GRACE_MS || "2500", 10)
+);
 
 const app = express();
 
@@ -58,6 +68,87 @@ function startKeepAlive(currentBot) {
     }, 15000);
 }
 
+function teardownBot(targetBot, reason = "") {
+    if (!targetBot || targetBot._voyagerDisconnecting) return;
+    targetBot._voyagerDisconnecting = true;
+    clearKeepAlive();
+    try {
+        if (targetBot.viewer) targetBot.viewer.close();
+    } catch (error) {}
+    try {
+        targetBot.end();
+    } catch (error) {}
+    if (reason) {
+        console.log(typeof reason === "string" ? reason : formatError(reason));
+    }
+    if (targetBot === bot) {
+        bot = null;
+    }
+}
+
+function clearMovementIntent(currentBot, reason = "") {
+    if (!currentBot) return;
+    try {
+        if (currentBot.pathfinder?.setGoal) {
+            currentBot.pathfinder.setGoal(null);
+        }
+    } catch (error) {}
+    try {
+        if (currentBot.pathfinder?.stop) {
+            currentBot.pathfinder.stop();
+        }
+    } catch (error) {}
+    try {
+        if (typeof currentBot.clearControlStates === "function") {
+            currentBot.clearControlStates();
+        } else if (typeof currentBot.setControlState === "function") {
+            for (const control of ["forward", "back", "left", "right", "jump", "sprint", "sneak"]) {
+                currentBot.setControlState(control, false);
+            }
+        }
+    } catch (error) {}
+    currentBot.stuckTickCounter = 0;
+    currentBot.stuckPosList = [];
+    if (reason) {
+        console.log(reason);
+    }
+}
+
+function inExternalTeleportHold(currentBot) {
+    if (!currentBot) return false;
+    return Date.now() < (currentBot.externalTeleportHoldUntil || 0);
+}
+
+function formatError(error) {
+    if (!error) return "Unknown error";
+    if (typeof error === "string") return error;
+    if (error.message) return error.message;
+    try {
+        return JSON.stringify(error);
+    } catch (jsonError) {
+        return String(error);
+    }
+}
+
+async function safeWaitForTicks(currentBot, ticks, label = "waitForTicks") {
+    if (!currentBot || typeof currentBot.waitForTicks !== "function") {
+        return false;
+    }
+    try {
+        await currentBot.waitForTicks(ticks);
+        return true;
+    } catch (error) {
+        console.log(
+            `[VOYAGER] ${label} failed (ticks=${ticks}): ${formatError(error)}`
+        );
+        return false;
+    }
+}
+
+process.on("unhandledRejection", (reason) => {
+    console.log(`[VOYAGER] Unhandled rejection: ${formatError(reason)}`);
+});
+
 app.post("/start", (req, res) => {
     if (bot && req.body.reset !== "hard") {
         try {
@@ -66,8 +157,9 @@ app.post("/start", (req, res) => {
             console.log(`Existing bot observe failed, restarting: ${error.message}`);
         }
     }
-    if (bot) onDisconnect("Restarting bot");
-    bot = null;
+    if (bot) {
+        teardownBot(bot, "Restarting bot");
+    }
     console.log(req.body);
     const botOptions = {
         host: req.body.host || "localhost",
@@ -81,145 +173,203 @@ app.post("/start", (req, res) => {
     if (req.body.version) botOptions.version = req.body.version;
     if (req.body.profilesFolder) botOptions.profilesFolder = req.body.profilesFolder;
     bot = mineflayer.createBot(botOptions);
-    bot.once("error", onConnectionFailed);
+    const currentBot = bot;
+    currentBot.once("error", onConnectionFailed);
 
     // Event subscriptions
-    bot.waitTicks = req.body.waitTicks;
-    bot.globalTickCounter = 0;
-    bot.stuckTickCounter = 0;
-    bot.stuckPosList = [];
-    bot.iron_pickaxe = false;
+    currentBot.waitTicks = req.body.waitTicks;
+    currentBot.globalTickCounter = 0;
+    currentBot.stuckTickCounter = 0;
+    currentBot.stuckPosList = [];
+    currentBot.iron_pickaxe = false;
 
-    bot.on("kicked", onDisconnect);
+    currentBot.on("kicked", onDisconnect);
+    currentBot.on("end", () => onDisconnect("Bot connection ended"));
 
     // mounting will cause physicsTick to stop
-    bot.on("mount", () => {
-        bot.dismount();
+    currentBot.on("mount", () => {
+        try {
+            currentBot.dismount();
+        } catch (error) {}
     });
 
-    bot.once("spawn", async () => {
-        bot.removeListener("error", onConnectionFailed);
+    currentBot.once("spawn", async () => {
+        if (currentBot !== bot) return;
+        currentBot.removeListener("error", onConnectionFailed);
         let itemTicks = 1;
-        if (req.body.reset === "hard") {
-            bot.chat("/clear @s");
-            const inventory = req.body.inventory ? req.body.inventory : {};
-            const equipment = req.body.equipment
-                ? req.body.equipment
-                : [null, null, null, null, null, null];
-            for (let key in inventory) {
-                bot.chat(`/give @s minecraft:${key} ${inventory[key]}`);
-                itemTicks += 1;
-            }
-            const equipmentNames = [
-                "armor.head",
-                "armor.chest",
-                "armor.legs",
-                "armor.feet",
-                "weapon.mainhand",
-                "weapon.offhand",
-            ];
-            for (let i = 0; i < 6; i++) {
-                if (i === 4) continue;
-                if (equipment[i]) {
-                    bot.chat(
-                        `/item replace entity @s ${equipmentNames[i]} with minecraft:${equipment[i]}`
-                    );
+        try {
+            if (req.body.reset === "hard") {
+                currentBot.chat("/clear @s");
+                const inventory = req.body.inventory ? req.body.inventory : {};
+                const equipment = req.body.equipment
+                    ? req.body.equipment
+                    : [null, null, null, null, null, null];
+                for (let key in inventory) {
+                    currentBot.chat(`/give @s minecraft:${key} ${inventory[key]}`);
                     itemTicks += 1;
                 }
+                const equipmentNames = [
+                    "armor.head",
+                    "armor.chest",
+                    "armor.legs",
+                    "armor.feet",
+                    "weapon.mainhand",
+                    "weapon.offhand",
+                ];
+                for (let i = 0; i < 6; i++) {
+                    if (i === 4) continue;
+                    if (equipment[i]) {
+                        currentBot.chat(
+                            `/item replace entity @s ${equipmentNames[i]} with minecraft:${equipment[i]}`
+                        );
+                        itemTicks += 1;
+                    }
+                }
             }
-        }
 
-        if (req.body.position) {
-            bot.chat(
-                `/tp @s ${req.body.position.x} ${req.body.position.y} ${req.body.position.z}`
+            if (req.body.position) {
+                currentBot.internalTeleportAt = Date.now();
+                currentBot.chat(
+                    `/tp @s ${req.body.position.x} ${req.body.position.y} ${req.body.position.z}`
+                );
+            }
+
+            // if iron_pickaxe is in bot's inventory
+            if (
+                currentBot.inventory.items().find((item) => item.name === "iron_pickaxe")
+            ) {
+                currentBot.iron_pickaxe = true;
+            }
+
+            const { pathfinder } = require("mineflayer-pathfinder");
+            const tool = require("mineflayer-tool").plugin;
+            const collectBlock = require("mineflayer-collectblock").plugin;
+            const pvp = require("mineflayer-pvp").plugin;
+            const minecraftHawkEyeModule = require("minecrafthawkeye");
+            const minecraftHawkEye =
+                minecraftHawkEyeModule.plugin ||
+                minecraftHawkEyeModule.default ||
+                minecraftHawkEyeModule;
+            currentBot.loadPlugin(pathfinder);
+            currentBot.loadPlugin(tool);
+            currentBot.loadPlugin(collectBlock);
+            currentBot.loadPlugin(pvp);
+            currentBot.loadPlugin(minecraftHawkEye);
+            currentBot.externalTeleportHoldUntil = 0;
+            currentBot.internalTeleportAt = 0;
+
+            currentBot.on("forcedMove", () => {
+                if (!EXTERNAL_TELEPORT_CANCEL_ENABLED) return;
+                const now = Date.now();
+                const lastInternalTeleportAt = currentBot.internalTeleportAt || 0;
+                const internalTeleport =
+                    now - lastInternalTeleportAt <= INTERNAL_TELEPORT_GRACE_MS;
+                if (internalTeleport) return;
+
+                currentBot.externalTeleportHoldUntil = now + EXTERNAL_TELEPORT_HOLD_MS;
+                clearMovementIntent(
+                    currentBot,
+                    `[VOYAGER] External teleport detected; pausing path goals for ${Math.round(
+                        EXTERNAL_TELEPORT_HOLD_MS / 1000
+                    )}s.`
+                );
+            });
+
+            // currentBot.collectBlock.movements.digCost = 0;
+            // currentBot.collectBlock.movements.placeCost = 0;
+
+            obs.inject(currentBot, [
+                OnChat,
+                OnError,
+                Voxels,
+                Status,
+                Inventory,
+                OnSave,
+                Chests,
+                BlockRecords,
+            ]);
+            skills.inject(currentBot);
+
+            if (req.body.spread) {
+                currentBot.chat(`/spreadplayers ~ ~ 0 300 under 80 false @s`);
+                await safeWaitForTicks(
+                    currentBot,
+                    currentBot.waitTicks,
+                    "start spreadplayers"
+                );
+            }
+
+            await safeWaitForTicks(
+                currentBot,
+                currentBot.waitTicks * itemTicks,
+                "start reset sync"
             );
+            if (!res.headersSent) {
+                if (currentBot !== bot) {
+                    res.status(503).json({ error: "Bot was replaced during startup" });
+                } else {
+                    res.json(currentBot.observe());
+                }
+            }
+
+            initCounter(currentBot);
+            startKeepAlive(currentBot);
+            currentBot.chat("/gamerule keepInventory true");
+            currentBot.chat("/gamerule doDaylightCycle false");
+        } catch (error) {
+            console.log(`[VOYAGER] /start setup failed: ${formatError(error)}`);
+            if (!res.headersSent) {
+                res.status(500).json({ error: formatError(error) });
+            }
+            onDisconnect(`Start pipeline failed: ${formatError(error)}`);
         }
-
-        // if iron_pickaxe is in bot's inventory
-        if (
-            bot.inventory.items().find((item) => item.name === "iron_pickaxe")
-        ) {
-            bot.iron_pickaxe = true;
-        }
-
-        const { pathfinder } = require("mineflayer-pathfinder");
-        const tool = require("mineflayer-tool").plugin;
-        const collectBlock = require("mineflayer-collectblock").plugin;
-        const pvp = require("mineflayer-pvp").plugin;
-        const minecraftHawkEyeModule = require("minecrafthawkeye");
-        const minecraftHawkEye =
-            minecraftHawkEyeModule.plugin ||
-            minecraftHawkEyeModule.default ||
-            minecraftHawkEyeModule;
-        bot.loadPlugin(pathfinder);
-        bot.loadPlugin(tool);
-        bot.loadPlugin(collectBlock);
-        bot.loadPlugin(pvp);
-        bot.loadPlugin(minecraftHawkEye);
-
-        // bot.collectBlock.movements.digCost = 0;
-        // bot.collectBlock.movements.placeCost = 0;
-
-        obs.inject(bot, [
-            OnChat,
-            OnError,
-            Voxels,
-            Status,
-            Inventory,
-            OnSave,
-            Chests,
-            BlockRecords,
-        ]);
-        skills.inject(bot);
-
-        if (req.body.spread) {
-            bot.chat(`/spreadplayers ~ ~ 0 300 under 80 false @s`);
-            await bot.waitForTicks(bot.waitTicks);
-        }
-
-        await bot.waitForTicks(bot.waitTicks * itemTicks);
-        res.json(bot.observe());
-
-        initCounter(bot);
-        startKeepAlive(bot);
-        bot.chat("/gamerule keepInventory true");
-        bot.chat("/gamerule doDaylightCycle false");
     });
 
     function onConnectionFailed(e) {
-        clearKeepAlive();
-        console.log(e);
-        bot = null;
-        res.status(400).json({ error: e });
+        if (currentBot !== bot) return;
+        teardownBot(currentBot, e);
+        if (!res.headersSent) {
+            res.status(400).json({ error: formatError(e) });
+        }
     }
     function onDisconnect(message) {
-        clearKeepAlive();
-        if (bot && bot.viewer) {
-            bot.viewer.close();
+        const disconnectMessage =
+            typeof message === "string" ? message : formatError(message);
+        teardownBot(currentBot, disconnectMessage);
+        if (!res.headersSent) {
+            res.status(503).json({
+                error: `Bot disconnected during startup: ${disconnectMessage}`,
+            });
         }
-        if (bot) {
-            bot.end();
-        }
-        console.log(typeof message === "string" ? message : JSON.stringify(message));
-        bot = null;
     }
 });
 
 app.post("/step", async (req, res) => {
-    // import useful package
-    let response_sent = false;
-    function otherError(err) {
-        console.log("Uncaught Error");
-        bot.emit("error", handleError(err));
-        bot.waitForTicks(bot.waitTicks).then(() => {
-            if (!response_sent) {
-                response_sent = true;
-                res.json(bot.observe());
-            }
-        });
+    if (!bot) {
+        return res.status(503).json({ error: "Bot not spawned" });
     }
 
+    // import useful package
+    let response_sent = false;
+    async function otherError(err) {
+        console.log("Uncaught Error");
+        try {
+            bot.emit("error", handleError(err));
+        } catch (emitError) {}
+        await safeWaitForTicks(bot, bot.waitTicks, "step uncaught error recovery");
+        if (!response_sent) {
+            response_sent = true;
+            try {
+                res.json(bot.observe());
+            } catch (observeError) {
+                res.status(500).json({ error: formatError(observeError) });
+            }
+        }
+    }
+    const otherRejection = (reason) => otherError(reason);
+
     process.on("uncaughtException", otherError);
+    process.on("unhandledRejection", otherRejection);
 
     const mcData = require("minecraft-data")(bot.version);
     mcData.itemsByName["leather_cap"] = mcData.itemsByName["leather_helmet"];
@@ -268,13 +418,22 @@ app.post("/step", async (req, res) => {
     bot.stuckPosList = [];
 
     function onTick() {
-        bot.globalTickCounter++;
-        if (bot.pathfinder.isMoving()) {
-            bot.stuckTickCounter++;
-            if (bot.stuckTickCounter >= 100) {
-                onStuck(1.5);
-                bot.stuckTickCounter = 0;
+        try {
+            if (!bot || !bot.entity) return;
+            if (inExternalTeleportHold(bot)) {
+                clearMovementIntent(bot);
+                return;
             }
+            bot.globalTickCounter++;
+            if (bot.pathfinder?.isMoving?.()) {
+                bot.stuckTickCounter++;
+                if (bot.stuckTickCounter >= 100) {
+                    onStuck(1.5);
+                    bot.stuckTickCounter = 0;
+                }
+            }
+        } catch (error) {
+            console.log(`[VOYAGER] physicsTick handler failed: ${formatError(error)}`);
         }
     }
 
@@ -291,20 +450,34 @@ app.post("/step", async (req, res) => {
     const code = req.body.code;
     const programs = req.body.programs;
     bot.cumulativeObs = [];
-    await bot.waitForTicks(bot.waitTicks);
-    const r = await evaluateCode(code, programs);
-    process.off("uncaughtException", otherError);
-    if (r !== "success") {
-        bot.emit("error", handleError(r));
+    try {
+        await safeWaitForTicks(bot, bot.waitTicks, "step pre-run sync");
+        const r = await evaluateCode(code, programs);
+        if (r !== "success") {
+            bot.emit("error", handleError(r));
+        }
+        await returnItems();
+        // wait for last message
+        await safeWaitForTicks(bot, bot.waitTicks, "step post-run sync");
+        if (!response_sent) {
+            response_sent = true;
+            try {
+                res.json(bot.observe());
+            } catch (observeError) {
+                res.status(500).json({ error: formatError(observeError) });
+            }
+        }
+    } catch (stepError) {
+        console.log(`[VOYAGER] /step execution failed: ${formatError(stepError)}`);
+        if (!response_sent) {
+            response_sent = true;
+            res.status(500).json({ error: formatError(stepError) });
+        }
+    } finally {
+        process.off("uncaughtException", otherError);
+        process.off("unhandledRejection", otherRejection);
+        bot.removeListener("physicsTick", onTick);
     }
-    await returnItems();
-    // wait for last message
-    await bot.waitForTicks(bot.waitTicks);
-    if (!response_sent) {
-        response_sent = true;
-        res.json(bot.observe());
-    }
-    bot.removeListener("physicsTick", onTick);
 
     async function evaluateCode(code, programs) {
         // Echo the code produced for players to see it. Don't echo when the bot code is already producing dialog or it will double echo
@@ -347,8 +520,10 @@ app.post("/step", async (req, res) => {
             // console.log(blocks.length);
             const randomIndex = Math.floor(Math.random() * blocks.length);
             const block = blocks[randomIndex];
+            bot.internalTeleportAt = Date.now();
             bot.chat(`/tp @s ${block.x} ${block.y} ${block.z}`);
         } else {
+            bot.internalTeleportAt = Date.now();
             bot.chat("/tp @s ~ ~1.25 ~");
         }
     }
@@ -455,7 +630,15 @@ app.post("/step", async (req, res) => {
 });
 
 app.post("/stop", (req, res) => {
-    bot.end();
+    if (!bot) {
+        return res.json({
+            message: "Bot already stopped",
+        });
+    }
+    try {
+        bot.end();
+    } catch (error) {}
+    bot = null;
     res.json({
         message: "Bot stopped",
     });
@@ -467,7 +650,7 @@ app.post("/pause", (req, res) => {
         return;
     }
     bot.chat("/pause");
-    bot.waitForTicks(bot.waitTicks).then(() => {
+    safeWaitForTicks(bot, bot.waitTicks, "pause toggle").then(() => {
         res.json({ message: "Success" });
     });
 });

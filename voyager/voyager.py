@@ -194,6 +194,10 @@ class Voyager:
         self.messages = None
         self.conversations = []
         self.last_events = None
+        self.restore_position_after_failure = (
+            os.getenv("VOYAGER_RESTORE_POSITION_AFTER_FAILURE", "0").strip().lower()
+            not in {"0", "false", "no", "off"}
+        )
 
     @staticmethod
     def _latest_observation_from_events(events):
@@ -256,7 +260,8 @@ class Voyager:
             last_observation = self._latest_observation_from_events(self.last_events)
             reset_options["inventory"] = last_observation["inventory"]
             reset_options["equipment"] = last_observation["status"]["equipment"]
-            reset_options["position"] = last_observation["status"]["position"]
+            if self.restore_position_after_failure:
+                reset_options["position"] = last_observation["status"]["position"]
         self.last_events = self.env.reset(options=reset_options)
         return self.last_events
 
@@ -502,7 +507,8 @@ class Voyager:
                     reset_options["equipment"] = last_observation["status"][
                         "equipment"
                     ]
-                    reset_options["position"] = last_observation["status"]["position"]
+                    if self.restore_position_after_failure:
+                        reset_options["position"] = last_observation["status"]["position"]
                 self.last_events = self.env.reset(options=reset_options)
                 # use red color background to print the error
                 print("Your last round rollout terminated due to error:")

@@ -1,3 +1,6 @@
+import hashlib
+import os
+import re
 import time
 
 from .file_utils import *
@@ -20,15 +23,23 @@ class EventRecorder:
         self.position_history = [[0, 0]]
         self.elapsed_time = 0
         self.iteration = 0
+        self.max_task_filename_len = max(
+            32, int(os.getenv("VOYAGER_EVENT_TASK_FILENAME_MAX", "120"))
+        )
         f_mkdir(self.ckpt_dir, "events")
         if resume:
             self.resume()
 
     def record(self, events, task):
-        task = re.sub(r'[\\/:"*?<>| ]', "_", task)
-        task = task.replace(" ", "_") + time.strftime(
-            "_%Y%m%d_%H%M%S", time.localtime()
-        )
+        task = re.sub(r'[\\/:"*?<>| ]', "_", task or "")
+        task = task.replace(" ", "_").strip("_") or "task"
+        timestamp = time.strftime("_%Y%m%d_%H%M%S", time.localtime())
+        max_task_len = max(8, self.max_task_filename_len - len(timestamp))
+        if len(task) > max_task_len:
+            digest = hashlib.sha1(task.encode("utf-8")).hexdigest()[:8]
+            prefix_len = max(1, max_task_len - len(digest) - 1)
+            task = f"{task[:prefix_len]}_{digest}"
+        task = f"{task}{timestamp}"
         self.iteration += 1
         if not self.init_position:
             self.init_position = [

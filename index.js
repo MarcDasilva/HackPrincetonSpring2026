@@ -154,6 +154,8 @@ const SUPABASE_MEMORY_RECENT_FETCH_LIMIT = Math.max(
   SUPABASE_MEMORY_SEARCH_LIMIT,
   parseInt(process.env.SUPABASE_MEMORY_RECENT_FETCH_LIMIT || "160", 10)
 );
+const VOYAGER_MEMORY_MCP_ENABLED =
+  `${process.env.VOYAGER_MEMORY_MCP_ENABLED || "1"}` !== "0";
 
 const PHOTON_TRACKING_DIR =
   process.env.PHOTON_TRACKING_DIR || path.join(__dirname, "photon-progress");
@@ -175,6 +177,22 @@ const AGENT_TRANSIENT_RESTART_DELAY_MS = Math.max(
   250,
   parseInt(process.env.VOYAGER_AGENT_TRANSIENT_RESTART_DELAY_MS || "2000", 10)
 );
+const AGENT_START_STAGGER_MS = Math.max(
+  0,
+  parseInt(process.env.VOYAGER_AGENT_START_STAGGER_MS || "0", 10)
+);
+const VOYAGER_DECOMPOSE_TIMEOUT_SEC = Math.max(
+  10,
+  parseInt(process.env.VOYAGER_DECOMPOSE_TIMEOUT_SEC || "75", 10)
+);
+const VOYAGER_ENV_REQUEST_TIMEOUT = Math.max(
+  30,
+  parseInt(process.env.VOYAGER_ENV_REQUEST_TIMEOUT || "180", 10)
+);
+const VOYAGER_SKIP_DECOMPOSE_FOR_MULTI_AGENT =
+  `${process.env.VOYAGER_SKIP_DECOMPOSE_FOR_MULTI_AGENT || "1"}` !== "0";
+const VOYAGER_RESET_ENV_BETWEEN_SUBGOALS =
+  `${process.env.VOYAGER_RESET_ENV_BETWEEN_SUBGOALS || "0"}` !== "0";
 
 const pendingApprovals = new Map();
 const activeRuns = new Map();
@@ -189,10 +207,8 @@ const MAX_EXPLICIT_AGENT_COUNT = 6;
 const CANONICAL_WORKER_ROLES = ["miner", "builder", "forager"];
 
 const MINECRAFT_AGENT_BOILERPLATE = [
-  "I can orchestrate local Minecraft bots through Photon.",
-  "Try a request like:",
-  "\"Start 2 bots: one miner for iron and one builder for shelter.\"",
-  "I'll propose the local run plan first, then wait for YES before launching.",
+  "Share the task and how many agents you want.",
+  "I'll reply with Task + Agents and ask if it's good before launch.",
 ].join("\n");
 
 const LOCATION_STOP_WORDS = new Set([
@@ -544,7 +560,8 @@ class SupabaseSharedMemoryStore {
     this.table = SUPABASE_SHARED_MEMORY_TABLE;
     this.projectId = SUPABASE_PROJECT_ID;
     this.contextTag = SUPABASE_CONTEXT_TAG;
-    this.enabled = Boolean(this.url && this.key);
+    this.enabled = VOYAGER_MEMORY_MCP_ENABLED && Boolean(this.url && this.key);
+    this.disabledByFlag = !VOYAGER_MEMORY_MCP_ENABLED;
     this.unsupportedColumnsByTable = new Map();
     this.knownAgentIds = new Set();
     this.embeddingCache = new Map();
@@ -1579,21 +1596,47 @@ function memoryHintLinesForContext({ text, memoryContext }) {
 }
 
 function applyMemoryContextToTask({ task, globalTask = "", memoryContext = null } = {}) {
-  const baseTask = toTrimmedString(task);
+  let baseTask = toTrimmedString(task).replace(/\s+/g, " ");
+  const memoryContextMarker = /Memory MCP context:/i;
+  if (memoryContextMarker.test(baseTask)) {
+    baseTask = baseTask.split(memoryContextMarker)[0].trim();
+  }
   if (!baseTask) return baseTask;
   if (!memoryContext) return baseTask;
-  if (/memory mcp context:/i.test(baseTask)) return baseTask;
 
-  const hintText = [baseTask, toTrimmedString(globalTask)].filter(Boolean).join(" ");
-  const hintLines = memoryHintLinesForContext({
-    text: hintText,
-    memoryContext,
+  const mentions = extractLocationMentions(
+    [baseTask, toTrimmedString(globalTask)].filter(Boolean).join(" ")
+  );
+  const resolvedLocations = ensureArray(memoryContext.resolved_locations);
+  const matching = resolvedLocations.filter((location) => {
+    if (!mentions.length) return true;
+    const mention = normalizeAlias(location.mention);
+    return mentions.some(
+      (candidate) =>
+        candidate === mention || candidate.includes(mention) || mention.includes(candidate)
+    );
   });
-  if (!hintLines.length) return baseTask;
 
-  return `${baseTask}\n\nMemory MCP context:\n${hintLines
-    .map((line) => `- ${line}`)
-    .join("\n")}`;
+  const candidates = (matching.length > 0 ? matching : resolvedLocations)
+    .map((location) => {
+      const coordText = formatCoordinates(location.coordinates);
+      if (!coordText) return "";
+      return `${location.mention} ${coordText}`;
+    })
+    .filter(Boolean)
+    .slice(0, 2);
+
+  if (!candidates.length) return baseTask;
+
+  const suffix = ` [memory: ${candidates.join(" | ")}]`;
+  const maxTaskLength = 220;
+  if (baseTask.length + suffix.length <= maxTaskLength) {
+    return `${baseTask}${suffix}`;
+  }
+
+  const allowedBaseLength = Math.max(40, maxTaskLength - suffix.length - 3);
+  const truncatedBase = `${baseTask.slice(0, allowedBaseLength)}...`;
+  return `${truncatedBase}${suffix}`;
 }
 
 function summarizeMemoryContextForProposal(memoryContext) {
@@ -1719,8 +1762,20 @@ class LocalBotExecutor {
     const escapedVoyagerPath = VOYAGER_PATH.replace(/\\/g, "\\\\");
     const escapedCkpt = this.ckptDir.replace(/\\/g, "\\\\");
     const taskLiteral = JSON.stringify(task || "");
-    const keyLiteral = JSON.stringify(process.env.OPENAI_API_KEY || "");
     const botLiteral = JSON.stringify(this.botUsername);
+    const skipDecompose = Boolean(hooks.skipDecompose);
+    const decomposeTimeoutSec = Math.max(
+      1,
+      Number.isFinite(Number(hooks.decomposeTimeoutSec))
+        ? Math.floor(Number(hooks.decomposeTimeoutSec))
+        : VOYAGER_DECOMPOSE_TIMEOUT_SEC
+    );
+    const envRequestTimeoutSec = Math.max(
+      30,
+      Number.isFinite(Number(hooks.envRequestTimeoutSec))
+        ? Math.floor(Number(hooks.envRequestTimeoutSec))
+        : VOYAGER_ENV_REQUEST_TIMEOUT
+    );
 
     const pythonScript = [
       "import os",
@@ -1734,22 +1789,40 @@ class LocalBotExecutor {
       `    mc_port=${MC_PORT},`,
       `    server_port=${this.serverPort},`,
       `    bot_username=${botLiteral},`,
-      `    openai_api_key=${keyLiteral},`,
+      "    openai_api_key=os.getenv('OPENAI_API_KEY'),",
       `    ckpt_dir=${JSON.stringify(escapedCkpt)},`,
+      `    env_request_timeout=${envRequestTimeoutSec},`,
       "    resume=False,",
       ")",
       `task = ${taskLiteral}`,
+      `skip_decompose = ${skipDecompose ? "True" : "False"}`,
+      `decompose_timeout_sec = ${decomposeTimeoutSec}`,
+      `reset_env_between_sub_goals = ${VOYAGER_RESET_ENV_BETWEEN_SUBGOALS ? "True" : "False"}`,
       "print(f'[VOYAGER] Task: {task}')",
       "try:",
-      "    print('[VOYAGER] Decomposing task...')",
-      "    try:",
-      "        sub_goals = voyager.decompose_task(task=task)",
-      "        print(f'[VOYAGER] Sub-goals: {sub_goals}')",
-      "    except Exception as decompose_error:",
-      "        print(f'[VOYAGER] Decompose failed, falling back to direct goal: {decompose_error}')",
+      "    if skip_decompose:",
+      "        print('[VOYAGER] Skipping task decomposition for this run; using direct goal.')",
       "        sub_goals = [task]",
+      "    else:",
+      "        print('[VOYAGER] Decomposing task...')",
+      "        try:",
+      "            import signal",
+      "            class _DecomposeTimeout(Exception):",
+      "                pass",
+      "            def _decompose_alarm_handler(signum, frame):",
+      "                raise _DecomposeTimeout('decompose timeout reached')",
+      "            signal.signal(signal.SIGALRM, _decompose_alarm_handler)",
+      "            signal.alarm(max(1, int(decompose_timeout_sec)))",
+      "            try:",
+      "                sub_goals = voyager.decompose_task(task=task)",
+      "            finally:",
+      "                signal.alarm(0)",
+      "            print(f'[VOYAGER] Sub-goals: {sub_goals}')",
+      "        except Exception as decompose_error:",
+      "            print(f'[VOYAGER] Decompose failed, falling back to direct goal: {decompose_error}')",
+      "            sub_goals = [task]",
       "    print('[VOYAGER] Executing in Minecraft...')",
-      "    voyager.inference(sub_goals=sub_goals)",
+      "    voyager.inference(sub_goals=sub_goals, reset_env=reset_env_between_sub_goals)",
       "    print('[VOYAGER] Task completed successfully!')",
       "except Exception as e:",
       "    print(f'[VOYAGER] Error: {e}')",
@@ -1883,7 +1956,10 @@ class LocalOrchestrationAgent {
       });
 
       await Promise.all(
-        ready.map(async ({ id, assignment, index }) => {
+        ready.map(async ({ id, assignment, index }, readyIndex) => {
+          if (AGENT_START_STAGGER_MS > 0 && readyIndex > 0) {
+            await sleep(AGENT_START_STAGGER_MS * readyIndex);
+          }
           await this.runAssignment(assignment, index);
           completed.add(id);
           pending.delete(id);
@@ -1957,6 +2033,9 @@ class LocalOrchestrationAgent {
 
     const maxAttempts = 1 + AGENT_TRANSIENT_RESTARTS;
     let lastError = null;
+    const skipDecompose =
+      VOYAGER_SKIP_DECOMPOSE_FOR_MULTI_AGENT &&
+      Number(this.run.agentCount || 0) > 1;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       const attemptLabel = `attempt ${attempt}/${maxAttempts}`;
@@ -1970,7 +2049,22 @@ class LocalOrchestrationAgent {
       }
 
       try {
+        if (skipDecompose && attempt === 1) {
+          recordRunEvent(this.run, {
+            type: "agent-decompose-skipped",
+            agent: effectiveAssignment.id,
+            role: effectiveAssignment.role,
+            message: `Skipping decompose for ${effectiveAssignment.id} in multi-agent mode.`,
+            data: {
+              run_agent_count: this.run.agentCount,
+              timeout_sec: VOYAGER_DECOMPOSE_TIMEOUT_SEC,
+            },
+          });
+        }
         await executor.executeTask(effectiveAssignment.task, {
+          skipDecompose,
+          decomposeTimeoutSec: VOYAGER_DECOMPOSE_TIMEOUT_SEC,
+          envRequestTimeoutSec: VOYAGER_ENV_REQUEST_TIMEOUT,
           onProcessStart: (child) => {
             this.run.children[effectiveAssignment.id] = child;
             recordRunEvent(this.run, {
@@ -2061,6 +2155,8 @@ function isTransientAgentFailure(message) {
     "service unavailable",
     "rate limit",
     "too many requests",
+    "throttled",
+    "please wait before reconnecting",
   ].some((token) => lower.includes(token));
 }
 
@@ -2152,14 +2248,31 @@ function parseExplicitAgentCountFromText(text) {
     eight: 8,
     nine: 9,
     ten: 10,
+    first: 1,
+    second: 2,
+    third: 3,
+    fourth: 4,
+    fifth: 5,
+    sixth: 6,
+    seventh: 7,
+    eighth: 8,
+    ninth: 9,
+    tenth: 10,
   };
   const wordMatches = [
     ...raw.matchAll(
-      /\b(one|two|three|four|five|six|seven|eight|nine|ten)\s*(?:bot|bots|agent|agents|worker|workers)\b/g
+      /\b(one|two|three|four|five|six|seven|eight|nine|ten|first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth)\s*(?:bot|bots|agent|agents|worker|workers)\b/g
     ),
   ];
   for (const match of wordMatches) {
     updateMax(wordCounts[match[1]] || 0);
+  }
+
+  const indefiniteMentions = [
+    ...raw.matchAll(/\b(?:an?|another)\s+(?:bot|agent|worker)\b/g),
+  ].length;
+  if (indefiniteMentions > 0) {
+    updateMax(indefiniteMentions);
   }
 
   const explicitRoleOnes = [...raw.matchAll(/\bone\s+(?:miner|builder|forager)\b/g)].length;
@@ -2175,6 +2288,71 @@ function parseExplicitAgentCountFromText(text) {
   }
 
   return maxCount;
+}
+
+function isLikelyAgentStartRequestText(text) {
+  const lower = `${text || ""}`.toLowerCase();
+  if (!lower) return false;
+  const hasAgentWord = /\b(?:bot|bots|agent|agents|worker|workers)\b/.test(lower);
+  const hasActionVerb =
+    /\b(?:start|spawn|launch|run|create|make|farm|collect|gather|mine|build|chop)\b/.test(lower);
+  return hasAgentWord && hasActionVerb;
+}
+
+function extractAgentTasksFromText(text, maxCount = MAX_EXPLICIT_AGENT_COUNT) {
+  const normalized = toTrimmedString(text).replace(/\s+/g, " ");
+  if (!normalized) return [];
+
+  let segmented = ` ${normalized} `;
+  segmented = segmented.replace(
+    /\s+(?:and\s+then|then|and)\s+(?=(?:start|spawn|launch|run|create|make)\b)/gi,
+    " ||| "
+  );
+  segmented = segmented.replace(
+    /\s+(?:and\s+then|then|and)\s+(?=(?:a|an|another|first|second|third|fourth|fifth|\d+|one|two|three|four|five|six)\s+(?:bot|agent|worker)\b)/gi,
+    " ||| "
+  );
+
+  const segments = segmented
+    .split("|||")
+    .map((part) => part.trim())
+    .filter(Boolean);
+  const tasks = [];
+
+  for (const segment of segments) {
+    if (!/\b(?:bot|agent|worker)\b/i.test(segment)) continue;
+    const marker = segment.match(/\b(?:to|for)\b\s+(.+)$/i);
+    if (!marker?.[1]) continue;
+
+    const task = marker[1]
+      .trim()
+      .replace(/^(?:please|go)\s+/i, "")
+      .replace(/[.?!]+$/g, "")
+      .trim();
+    if (!task) continue;
+    tasks.push(task);
+  }
+
+  const uniqueTasks = uniqueStrings(tasks);
+  if (uniqueTasks.length === 0) {
+    const pluralTaskMatch = normalized.match(
+      /\b(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+(?:bots?|agents?|workers?)\s+(?:to|for)\s+(.+)$/i
+    );
+    if (pluralTaskMatch?.[1]) {
+      const fallbackTask = pluralTaskMatch[1]
+        .trim()
+        .replace(/[.?!]+$/g, "")
+        .trim();
+      if (fallbackTask) {
+        return [fallbackTask].slice(
+          0,
+          Math.max(1, Math.floor(maxCount || MAX_EXPLICIT_AGENT_COUNT))
+        );
+      }
+    }
+    return [];
+  }
+  return uniqueTasks.slice(0, Math.max(1, Math.floor(maxCount || MAX_EXPLICIT_AGENT_COUNT)));
 }
 
 function getRequestedAgentLimitFromConversation(conversation) {
@@ -2355,6 +2533,201 @@ function isAffirmative(text) {
   return /^(yes|y|yeah|yep|confirm|confirmed|approve|approved|launch|go|go ahead|do it|looks good|sounds good)[.! ]*$/i.test(
     text.trim()
   );
+}
+
+function normalizeTapbackKind(value) {
+  const normalized = toTrimmedString(value).toLowerCase();
+  if (!normalized) return null;
+
+  if (["love", "loved", "heart", "hearted"].includes(normalized)) return "love";
+  if (
+    [
+      "like",
+      "liked",
+      "thumbsup",
+      "thumbs-up",
+      "thumbs_up",
+      "thumbs up",
+      "+1",
+      "upvote",
+    ].includes(normalized)
+  ) {
+    return "like";
+  }
+  if (["dislike", "disliked", "thumbsdown", "thumbs down", "thumbs_down", "thumbs-down"].includes(normalized)) {
+    return "dislike";
+  }
+  if (["laugh", "laughed"].includes(normalized)) return "laugh";
+  if (["emphasize", "emphasized", "emphasis"].includes(normalized)) return "emphasize";
+  if (["question", "questioned"].includes(normalized)) return "question";
+  if (["emoji"].includes(normalized)) return "emoji";
+  if (["sticker"].includes(normalized)) return "sticker";
+  return null;
+}
+
+function parseAssociatedReactionType(value) {
+  const raw = toTrimmedString(value);
+  if (!raw) return null;
+
+  const match = raw.match(/([23]00[0-7])/);
+  const maybeCode = match ? Number(match[1]) : Number(raw);
+  if (!Number.isFinite(maybeCode)) return null;
+
+  let code = maybeCode;
+  let isRemoved = false;
+  if (code >= 3000 && code <= 3007) {
+    code -= 1000;
+    isRemoved = true;
+  }
+
+  const kindByCode = {
+    2000: "love",
+    2001: "like",
+    2002: "dislike",
+    2003: "laugh",
+    2004: "emphasize",
+    2005: "question",
+    2006: "emoji",
+    2007: "sticker",
+  };
+  const kind = kindByCode[code] || null;
+  if (!kind) return null;
+  return { kind, isRemoved };
+}
+
+function normalizeEmojiSignal(text) {
+  return `${text || ""}`
+    .trim()
+    .replace(/\uFE0F/gu, "")
+    .replace(/[\u{1F3FB}-\u{1F3FF}]/gu, "");
+}
+
+function isAffirmativeReactionEmoji(text) {
+  const normalized = normalizeEmojiSignal(text);
+  return normalized === "👍" || normalized === "❤" || normalized === "♥";
+}
+
+function isAffirmativeReactionText(text) {
+  const normalized = toTrimmedString(text);
+  if (!normalized) return false;
+  if (isAffirmativeReactionEmoji(normalized)) return true;
+  // Local iMessage tapbacks can surface as plain text rows like "Loved ..."/"Liked ...".
+  return /^(loved|liked)\b/i.test(normalized);
+}
+
+function extractReactionSignalFromCustomRaw(raw, depth = 0) {
+  if (!raw || depth > 5) return null;
+
+  if (typeof raw === "string") {
+    const parsed = safeParseJsonObject(raw);
+    if (!parsed) return null;
+    return extractReactionSignalFromCustomRaw(parsed, depth + 1);
+  }
+
+  if (Array.isArray(raw)) {
+    for (const item of raw) {
+      const nested = extractReactionSignalFromCustomRaw(item, depth + 1);
+      if (nested) return nested;
+    }
+    return null;
+  }
+
+  if (typeof raw !== "object") return null;
+
+  let kind = null;
+  let isRemoved = false;
+  let emoji = "";
+
+  const reaction = raw.reaction;
+  if (typeof reaction === "string") {
+    kind = normalizeTapbackKind(reaction);
+  } else if (reaction && typeof reaction === "object") {
+    kind =
+      normalizeTapbackKind(reaction.kind) ||
+      normalizeTapbackKind(reaction.type) ||
+      normalizeTapbackKind(reaction.reaction);
+    isRemoved = Boolean(reaction.isRemoved ?? reaction.removed ?? reaction.is_removed);
+    emoji = toTrimmedString(reaction.emoji || reaction.value);
+  }
+
+  if (!kind) {
+    kind =
+      normalizeTapbackKind(raw.kind) ||
+      normalizeTapbackKind(raw.reactionKind) ||
+      normalizeTapbackKind(raw.reaction_type) ||
+      normalizeTapbackKind(raw.tapback) ||
+      normalizeTapbackKind(raw.tapbackType);
+  }
+
+  if (!emoji) {
+    emoji = toTrimmedString(raw.emoji || raw.associatedMessageEmoji || raw.associated_message_emoji);
+  }
+
+  if (!kind) {
+    const associated = parseAssociatedReactionType(
+      raw.associatedMessageType ?? raw.associated_message_type
+    );
+    if (associated) {
+      kind = associated.kind;
+      isRemoved = isRemoved || associated.isRemoved;
+    }
+  }
+
+  if (!kind) {
+    const updateType = toTrimmedString(raw.updateType || raw.update_type).toLowerCase();
+    if (updateType === "reaction") {
+      const associatedFromMessage = parseAssociatedReactionType(
+        raw.message?.associatedMessageType ?? raw.message?.associated_message_type
+      );
+      if (associatedFromMessage) {
+        kind = associatedFromMessage.kind;
+        isRemoved = isRemoved || associatedFromMessage.isRemoved;
+      }
+      if (!kind) {
+        kind =
+          normalizeTapbackKind(raw.message?.reaction) ||
+          normalizeTapbackKind(raw.message?.kind) ||
+          normalizeTapbackKind(raw.message?.reactionKind);
+      }
+      if (!emoji) {
+        emoji = toTrimmedString(raw.message?.associatedMessageEmoji || raw.message?.emoji);
+      }
+    }
+  }
+
+  if (kind) return { kind, isRemoved, emoji };
+
+  for (const key of ["message", "payload", "data", "event", "raw", "meta", "metadata"]) {
+    const nested = extractReactionSignalFromCustomRaw(raw[key], depth + 1);
+    if (nested) return nested;
+  }
+
+  return null;
+}
+
+function extractAffirmativeReactionApproval(message) {
+  if (!message || typeof message !== "object") return null;
+
+  if (message.content?.type === "text") {
+    return isAffirmativeReactionText(message.content.text)
+      ? { source: "text", kind: "like" }
+      : null;
+  }
+
+  if (message.content?.type !== "custom") return null;
+
+  const signal = extractReactionSignalFromCustomRaw(message.content.raw);
+  if (!signal || signal.isRemoved) return null;
+
+  if (signal.kind === "love" || signal.kind === "like") {
+    return { source: "custom", kind: signal.kind };
+  }
+
+  if (signal.kind === "emoji" && isAffirmativeReactionEmoji(signal.emoji)) {
+    return { source: "custom", kind: "emoji" };
+  }
+
+  return null;
 }
 
 function isNegativeOnly(text) {
@@ -2552,6 +2925,9 @@ function normalizeAssignment(assignment, index, defaults) {
 }
 
 function normalizeProposal(raw, context) {
+  const latestUserText = latestConversationText(context?.conversation);
+  const explicitRequestedAgentCount = parseExplicitAgentCountFromText(latestUserText);
+  const explicitStartIntent = isLikelyAgentStartRequestText(latestUserText);
   const requestedAgentLimit = getRequestedAgentLimitFromConversation(
     context?.conversation
   );
@@ -2563,7 +2939,7 @@ function normalizeProposal(raw, context) {
     )
     .filter(Boolean);
 
-  const task =
+  let task =
     typeof raw?.task === "string" && raw.task.trim() ? raw.task.trim() : null;
   let roles = uniqueStrings(
     [...rawRoles, ...rolesFromAssignments].map((role, index) =>
@@ -2597,6 +2973,36 @@ function normalizeProposal(raw, context) {
         priority: normalizePriority(raw?.priority),
       })
     );
+  }
+
+  let usedTextTaskFallback = false;
+  if (!task || assignments.length === 0 || assignments.every((assignment) => !assignment.task?.trim())) {
+    const inferredTasks = extractAgentTasksFromText(latestUserText, requestedAgentLimit);
+    const inferredCount =
+      explicitRequestedAgentCount > 1
+        ? Math.min(explicitRequestedAgentCount, requestedAgentLimit)
+        : 0;
+
+    let textDerivedTasks = inferredTasks;
+    if (inferredCount > 1 && inferredTasks.length === 1) {
+      textDerivedTasks = Array.from({ length: inferredCount }, () => inferredTasks[0]);
+    }
+
+    if (textDerivedTasks.length > 0) {
+      assignments = textDerivedTasks.map((taskText, index) =>
+        normalizeAssignment({ task: taskText }, index, {
+          roles,
+          task: taskText,
+          priority: normalizePriority(raw?.priority),
+        })
+      );
+      task =
+        textDerivedTasks.length === 1
+          ? textDerivedTasks[0]
+          : `Coordinate ${textDerivedTasks.length} agent tasks: ${textDerivedTasks.join("; ")}`;
+      roles = uniqueStrings(assignments.map((assignment) => assignment.role));
+      usedTextTaskFallback = true;
+    }
   }
 
   const requestedAgentCount = Number(raw?.agent_count);
@@ -2666,11 +3072,25 @@ function normalizeProposal(raw, context) {
     agentCount = assignments.length || 1;
   }
 
+  const hasRunnablePlan = Boolean(task) && assignments.length > 0;
   const startAgentOrchestration =
-    Boolean(raw?.start_agent_orchestration) && Boolean(task);
+    hasRunnablePlan &&
+    (Boolean(raw?.start_agent_orchestration) ||
+      usedTextTaskFallback ||
+      explicitStartIntent ||
+      explicitRequestedAgentCount > 1);
 
   const constraints = uniqueStrings([...ensureArray(raw?.constraints)]);
   const priority = normalizePriority(raw?.priority);
+  let requiresClarification = Boolean(raw?.requires_clarification);
+  let clarificationQuestion =
+    typeof raw?.clarification_question === "string" && raw.clarification_question.trim()
+      ? raw.clarification_question.trim()
+      : null;
+  if (startAgentOrchestration && hasRunnablePlan && explicitStartIntent) {
+    requiresClarification = false;
+    clarificationQuestion = null;
+  }
 
   return {
     start_agent_orchestration: startAgentOrchestration,
@@ -2688,12 +3108,8 @@ function normalizeProposal(raw, context) {
     agent_assignments: assignments,
     priority,
     constraints,
-    requires_clarification: Boolean(raw?.requires_clarification),
-    clarification_question:
-      typeof raw?.clarification_question === "string" &&
-      raw.clarification_question.trim()
-        ? raw.clarification_question.trim()
-        : null,
+    requires_clarification: requiresClarification,
+    clarification_question: clarificationQuestion,
     reasoning_summary:
       typeof raw?.reasoning_summary === "string" && raw.reasoning_summary.trim()
         ? raw.reasoning_summary.trim()
@@ -2746,6 +3162,7 @@ async function requestOrchestrationProposal({
     "Default to exactly 1 agent unless the user explicitly asks for multiple agents/bots.",
     `Only use these worker roles in agent_roles and agent_assignments.role: ${CANONICAL_WORKER_ROLES.join(", ")}.`,
     "If the user request does not need bots, set start_agent_orchestration=false and mode=ignore.",
+    "If the user explicitly says to start/spawn agents and gives actionable work, set start_agent_orchestration=true and requires_clarification=false.",
     "When tasks are independent, leave depends_on empty so the orchestrator can run them in parallel.",
     "When sequencing is required, use depends_on with assignment ids.",
     "You are given memory_context from a Supabase Memory MCP retrieval layer.",
@@ -3639,63 +4056,23 @@ function startDashboardServer() {
 
 function formatAssignments(assignments) {
   if (!assignments.length) {
-    return ["1. generalist — Handle the full request."];
+    return ["1) generalist: handle the full task"];
   }
 
   return assignments.map((assignment, index) => {
-    const dependencyText =
-      assignment.depends_on.length > 0
-        ? ` (depends on: ${assignment.depends_on.join(", ")})`
-        : "";
-    return `${index + 1}. ${assignment.role} — ${truncate(assignment.task, 160)}${dependencyText}`;
+    return `${index + 1}) ${assignment.role}: ${truncate(assignment.task, 140)}`;
   });
 }
 
 function formatProposalMessage(state) {
   const proposal = state.proposal;
-  const roleText =
-    proposal.agent_roles.length > 0
-      ? proposal.agent_roles.join(", ")
-      : "generalist";
-
-  const lines = [
-    state.revision > 1 ? `Updated plan (rev ${state.revision}).` : "Proposed plan.",
+  const assignments = formatAssignments(proposal.agent_assignments);
+  return [
     `Task: ${proposal.task || "unspecified"}`,
     `Agents: ${proposal.agent_count || 1}`,
-    `Roles: ${roleText}`,
-    `Priority: ${proposal.priority}`,
-    "Assignments:",
-    ...formatAssignments(proposal.agent_assignments),
-  ];
-
-  if (proposal.constraints.length > 0) {
-    lines.push(`Constraints: ${proposal.constraints.join("; ")}`);
-  }
-
-  const memoryContext = proposal.memory_context;
-  if (memoryContext?.resolved_locations?.length > 0) {
-    lines.push(
-      `Memory recalls: ${memoryContext.resolved_locations
-        .slice(0, 3)
-        .map((location) => {
-          const coordText = formatCoordinates(location.coordinates);
-          return coordText ? `${location.mention} (${coordText})` : location.mention;
-        })
-        .join("; ")}`
-    );
-  }
-
-  lines.push(`Summary: ${proposal.reasoning_summary}`);
-
-  if (proposal.requires_clarification && proposal.clarification_question) {
-    lines.push(`Open question: ${proposal.clarification_question}`);
-  }
-
-  lines.push(`Tracking: ${toRelativeTrackingPath(state.filePath)}`);
-  lines.push(proposal.approval_prompt);
-  lines.push("Use /status any time to inspect the current draft or active runs.");
-
-  return lines.join("\n");
+    ...assignments,
+    "Is this good? Reply YES or tell me what to change.",
+  ].join("\n");
 }
 
 function formatRunStatus(run, { detailed = false } = {}) {
@@ -4021,17 +4398,13 @@ function launchLocalRun(run, proposalState, space) {
 
     const completionPrompt =
       run.status === "completed"
-        ? `All assigned tasks are done and ${
-            run.agentCount > 1 ? "the agents have" : "the agent has"
-          } exited. Send the next task, or reply \`end\` (or \`/end\`) to stop.`
+        ? "Done. Send the next task when ready."
         : null;
 
     await safeSend(
       space,
       [
         `Run ${run.id} ${run.status}.`,
-        `Tracking: ${toRelativeTrackingPath(run.filePath)}`,
-        run.latestMessage ? `Latest: ${truncate(run.latestMessage, 220)}` : null,
         completionPrompt,
       ]
         .filter(Boolean)
@@ -4078,7 +4451,7 @@ async function revisePendingPlan({ state, text, senderId, spaceId, space }) {
     state.status = "cancelled";
     persistProposalState(state);
     pendingApprovals.delete(spaceId);
-    await safeSend(space, "No launch queued. Send a new task whenever you're ready.");
+    await safeSend(space, "No launch queued. Send a task when ready.");
     return;
   }
 
@@ -4250,21 +4623,15 @@ async function approvePendingPlan({ state, space, spaceId }) {
   await safeSend(
     space,
     [
-      "Launching approved local plan now.",
-      `Run: ${run.id}`,
-      `Tracking: ${toRelativeTrackingPath(run.filePath)}`,
-      `Tracker index: ${toRelativeTrackingPath(TRACKER_INDEX_PATH)}`,
-      "Use /status to follow the run.",
+      `Launching run ${run.id}.`,
+      "Use /status if you want progress.",
     ].join("\n")
   );
 }
 
 async function cancelPendingPlan({ state, space, spaceId }) {
   discardPendingPlan(state, spaceId, { status: "cancelled" });
-  await safeSend(
-    space,
-    `Cancelled the pending draft.\nTracking: ${toRelativeTrackingPath(state.filePath)}`
-  );
+  await safeSend(space, "Cancelled the draft.");
 }
 
 async function cancelRun({ run, space }) {
@@ -4274,19 +4641,13 @@ async function cancelRun({ run, space }) {
   }
 
   if (!activeRuns.has(run.id)) {
-    await safeSend(
-      space,
-      `Run ${run.id} is not active anymore.\nTracking: ${toRelativeTrackingPath(run.filePath)}`
-    );
+    await safeSend(space, `Run ${run.id} is not active.`);
     return;
   }
 
   requestRunCancellation(run, { source: "photon" });
 
-  await safeSend(
-    space,
-    `Cancellation requested for run ${run.id}.\nTracking: ${toRelativeTrackingPath(run.filePath)}`
-  );
+  await safeSend(space, `Cancelling run ${run.id}.`);
 }
 
 function formatMemoryEntryLine(memory, index = 0) {
@@ -4570,7 +4931,15 @@ async function main() {
   console.log(`🧠 Local orchestrator target: ${VOYAGER_PATH}`);
   console.log(`🐍 Python binary: ${PYTHON_BIN}`);
   console.log(`🎮 Minecraft target: ${MC_HOST}:${MC_PORT} (base bot server port ${BASE_SERVER_PORT})`);
-  console.log(`💾 Supabase shared memory: ${sharedMemoryStore.enabled ? "enabled" : "disabled"}`);
+  console.log(
+    `🛠️  Multi-agent startup: stagger=${AGENT_START_STAGGER_MS}ms, skip_decompose_multi=${VOYAGER_SKIP_DECOMPOSE_FOR_MULTI_AGENT}, decompose_timeout=${VOYAGER_DECOMPOSE_TIMEOUT_SEC}s, env_request_timeout=${VOYAGER_ENV_REQUEST_TIMEOUT}s, reset_env_between_subgoals=${VOYAGER_RESET_ENV_BETWEEN_SUBGOALS}`
+  );
+  const memoryStatusLabel = sharedMemoryStore.enabled
+    ? "enabled"
+    : sharedMemoryStore.disabledByFlag
+      ? "disabled (VOYAGER_MEMORY_MCP_ENABLED=0)"
+      : "disabled";
+  console.log(`💾 Supabase shared memory: ${memoryStatusLabel}`);
   if (sharedMemoryStore.enabled) {
     console.log(`   table: ${SUPABASE_SHARED_MEMORY_TABLE}`);
     if (sharedMemoryStore.projectId) {
@@ -4640,13 +5009,10 @@ async function main() {
 
           const pending = pendingApprovals.get(spaceId);
           if (pending) {
-            if (isAffirmative(text)) {
+            if (isAffirmative(text) || isAffirmativeReactionText(text)) {
               await approvePendingPlan({ state: pending, space, spaceId });
             } else if (isNegativeOnly(text)) {
-              await safeSend(
-                space,
-                "No problem. Tell me what you want changed and I'll revise the plan."
-              );
+              await safeSend(space, "Tell me what to change.");
             } else {
               await revisePendingPlan({
                 state: pending,
@@ -4667,7 +5033,7 @@ async function main() {
               if (!nextTask) {
                 await safeSend(
                   space,
-                  "Current agent cancelled. Send `new agent: <task>` or `/new <task>` to start the replacement."
+                  "Cancelled. Send `/new <task>` to start the replacement."
                 );
               } else {
                 await proposeNewPlan({ text: nextTask, senderId, spaceId, space });
@@ -4680,7 +5046,7 @@ async function main() {
               });
               await safeSend(
                 space,
-                "You already have an active agent in this chat. Send `/new <task>` to replace it."
+                "An agent is already active. Send `/new <task>` to replace it."
               );
             }
             break;
@@ -4702,6 +5068,17 @@ async function main() {
 
         case "custom": {
           console.log("   Custom:", message.content.raw);
+          const spaceId = space.id;
+          const pending = pendingApprovals.get(spaceId);
+          if (pending) {
+            const reactionApproval = extractAffirmativeReactionApproval(message);
+            if (reactionApproval) {
+              console.log(
+                `   Reaction approval detected (${reactionApproval.kind} via ${reactionApproval.source}).`
+              );
+              await approvePendingPlan({ state: pending, space, spaceId });
+            }
+          }
           break;
         }
 
@@ -4767,6 +5144,12 @@ export {
   applyMemoryContextToTask,
   summarizeMemoryContextForProposal,
   augmentProposalWithMemoryContext,
+  parseExplicitAgentCountFromText,
+  extractAgentTasksFromText,
+  isLikelyAgentStartRequestText,
+  normalizeProposal,
+  isAffirmativeReactionText,
+  extractAffirmativeReactionApproval,
   parseSlashMemoryCommand,
   parseNaturalMemoryLogCommand,
 };

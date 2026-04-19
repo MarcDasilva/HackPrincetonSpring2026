@@ -63,7 +63,7 @@ async function main() {
 
   const enrichedTask = `${enriched?.task || ""}`;
   const coordToken = `x=${coordinates.x}`;
-  if (!enrichedTask.includes("Memory MCP context") || !enrichedTask.includes(coordToken)) {
+  if (!enrichedTask.includes("[memory:") || !enrichedTask.includes(coordToken)) {
     throw new Error(`Task enrichment missing expected coordinates. Task: ${enrichedTask}`);
   }
 
@@ -76,4 +76,3 @@ main().catch((error) => {
   console.error(`FAIL: ${error.message}`);
   process.exitCode = 1;
 });
-
